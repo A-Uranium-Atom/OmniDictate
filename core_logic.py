@@ -95,17 +95,48 @@ class DictationWorker(QObject):
         if self.model and not force_reload: return True
         if self.model and force_reload: print(f"Force reloading model '{self.model_size}'..."); del self.model; self.model = None;
         if torch.cuda.is_available(): print("Clearing CUDA cache..."); torch.cuda.empty_cache()
+        
         try:
             self.status_updated.emit(f"Loading model '{self.model_size}'...")
-            use_cuda = torch.cuda.is_available(); device = "cuda" if use_cuda else "cpu"; compute_type = "float16" if use_cuda else "int8"
             if not self.model_size: raise ValueError("Model size empty.")
+            
             model_path = self.model_size
             if self.model_size == "large-v3-turbo":
                 model_path = "deepdml/faster-whisper-large-v3-turbo-ct2"
-            self.model = WhisperModel(model_path, device=device, compute_type=compute_type, local_files_only=False)
-            status_msg = f"Model '{self.model_size}' loaded on {device.upper()}."; print(status_msg); self.status_updated.emit(status_msg)
-            return True
-        except Exception as e: error_msg = f"Error loading model: {e}"; print(error_msg); self.error_occurred.emit(error_msg); self.model = None; return False
+
+            # Attempt 1: Default (CUDA + float16 if available)
+            try:
+                use_cuda = torch.cuda.is_available()
+                device = "cuda" if use_cuda else "cpu"
+                compute_type = "float16" if use_cuda else "int8"
+                print(f"Attempting to load model on {device} with {compute_type}...")
+                self.model = WhisperModel(model_path, device=device, compute_type=compute_type, local_files_only=False)
+                status_msg = f"Model '{self.model_size}' loaded on {device.upper()} ({compute_type})."
+                print(status_msg); self.status_updated.emit(status_msg)
+                return True
+            except Exception as e:
+                if "float16" in str(e) and device == "cuda":
+                    print(f"Float16 failed on CUDA: {e}. Retrying with float32...")
+                    # Fallback 1: CUDA + float32
+                    try:
+                        compute_type = "float32"
+                        self.model = WhisperModel(model_path, device="cuda", compute_type=compute_type, local_files_only=False)
+                        status_msg = f"Model '{self.model_size}' loaded on CUDA (float32 fallback)."
+                        print(status_msg); self.status_updated.emit(status_msg)
+                        return True
+                    except Exception as e2:
+                        print(f"Float32 on CUDA failed: {e2}. Falling back to CPU...")
+                
+                # Fallback 2: CPU + int8 (Final Resort)
+                print("Falling back to CPU (int8)...")
+                self.model = WhisperModel(model_path, device="cpu", compute_type="int8", local_files_only=False)
+                status_msg = f"Model '{self.model_size}' loaded on CPU (int8 fallback)."
+                print(status_msg); self.status_updated.emit(status_msg)
+                return True
+
+        except Exception as e: 
+            error_msg = f"Error loading model: {e}"
+            print(error_msg); self.error_occurred.emit(error_msg); self.model = None; return False
 
     @Slot()
     def start_processing(self):
@@ -268,7 +299,7 @@ class DictationWorker(QObject):
                         for char in text_to_type:
                             if not self._is_running or self.stop_typing_event.is_set(): break
                             keyboard_controller.press(char)
-                            time.sleep(0.02) # Robustness: Hold key for 20ms
+
                             keyboard_controller.release(char)
                             time.sleep(self.char_delay)
                     except Exception as e: error_msg = f"Error typing text: {e}"; print(error_msg); self.error_occurred.emit(error_msg)

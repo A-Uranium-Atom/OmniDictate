@@ -382,7 +382,7 @@ class OmniDictateApp(QMainWindow):
         
         grid.addWidget(QLabel("Typing Delay (s):", objectName="settingLabel"), row, 2)
         self.delay_spinbox = QDoubleSpinBox()
-        self.delay_spinbox.setRange(0.0, 0.5); self.delay_spinbox.setSingleStep(0.005); self.delay_spinbox.setDecimals(3)
+        self.delay_spinbox.setRange(0.0, 0.1); self.delay_spinbox.setSingleStep(0.005); self.delay_spinbox.setDecimals(3)
         self.delay_spinbox.setValue(self.loaded_settings.get("char_delay", DEFAULT_CHAR_DELAY))
         grid.addWidget(self.delay_spinbox, row, 3); row += 1
 
@@ -774,7 +774,7 @@ if __name__ == "__main__":
     # --- Set AppUserModelID for Taskbar Icon ---
     try:
         import ctypes
-        myappid = 'omnicorp.omnidictate.gui.2.0.1' # Arbitrary string
+        myappid = 'omnicorp.omnidictate.gui.2.0.2' # Arbitrary string
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
     except Exception as e:
         print(f"Error setting AppUserModelID: {e}")
