@@ -39,13 +39,27 @@ DEFAULT_VAD_ENABLED = True
 DEFAULT_SILENCE_THRESHOLD = 500
 DEFAULT_CHAR_DELAY = 0.02
 DEFAULT_PTT_KEY_STR = "keyboard.Key.shift_r"
+DEFAULT_RMS_THRESHOLD = 0.01
+DEFAULT_HALLUCINATION_FILTER = "Medium"  # Recommended
+DEFAULT_INSERTION_METHOD = "Paste" # Recommended
 
-DEFAULT_FILTER_WORDS = ["thanks for watching!", "thank you.", "thanks for watching", "Thanks for watching.", "thank you", "I'm sorry"," I'm sorry,", "I'm sorry, ", "I'm sorry,"]
+DEFAULT_FILTER_WORDS = [
+    "thank you",
+    "thanks for watching",
+    "thanks for listening",
+    "i'm sorry",
+    "subtitles by",
+    "subscribe",
+    "like and subscribe",
+    "please subscribe",
+    "you",
+]
 
 
 # --- Main Application Window ---
 class OmniDictateApp(QMainWindow):
     ptt_signal = Signal(bool)
+    settings_updated_signal = Signal(dict)
 
     def __init__(self):
         super().__init__()
@@ -65,6 +79,7 @@ class OmniDictateApp(QMainWindow):
         self.setting_key_for = None
         self.original_button_text = ""
         self._is_stopping = False
+        self.last_start_click_time = 0
 
         self.load_settings()
 
@@ -113,6 +128,9 @@ class OmniDictateApp(QMainWindow):
         self.language_combo.currentTextChanged.connect(self.save_settings)
         self.silence_spinbox.valueChanged.connect(self.save_settings)
         self.delay_spinbox.valueChanged.connect(self.save_settings)
+        self.rms_spinbox.valueChanged.connect(self.save_settings)
+        self.hallucination_combo.currentTextChanged.connect(self.save_settings)
+        self.insertion_combo.currentTextChanged.connect(self.save_settings)
 
 
         self.start_hotkey_listener()
@@ -329,8 +347,8 @@ class OmniDictateApp(QMainWindow):
         
         # Grid Layout for Settings Content
         grid = QGridLayout(content_widget)
-        grid.setHorizontalSpacing(20)
-        grid.setVerticalSpacing(20)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(18)
         grid.setContentsMargins(10, 10, 20, 10)
         
         row = 0
@@ -338,14 +356,14 @@ class OmniDictateApp(QMainWindow):
         # --- AI Model Section ---
         grid.addWidget(QLabel("AI Model", objectName="sectionHeader"), row, 0, 1, 2); row += 1
         
-        grid.addWidget(QLabel("Whisper Model:", objectName="settingLabel"), row, 0)
+        grid.addWidget(QLabel("Whisper Model:", objectName="settingLabel", alignment=Qt.AlignRight | Qt.AlignVCenter), row, 0)
         self.model_combo = QComboBox()
         self.model_combo.addItems(["large-v3-turbo", "large-v3", "medium", "small", "base", "tiny"])
         self.model_combo.setCurrentText(self.loaded_settings.get("model_size", DEFAULT_MODEL_SIZE))
         grid.addWidget(self.model_combo, row, 1)
         
         # Language Selection
-        grid.addWidget(QLabel("Language:", objectName="settingLabel"), row, 2)
+        grid.addWidget(QLabel("Language:", objectName="settingLabel", alignment=Qt.AlignRight | Qt.AlignVCenter), row, 2)
         self.language_combo = QComboBox()
         
         # Populate languages
@@ -374,13 +392,13 @@ class OmniDictateApp(QMainWindow):
             self.language_combo.setCurrentIndex(0) # Default to Auto Detect if unknown
         grid.addWidget(self.language_combo, row, 3); row += 1
         
-        grid.addWidget(QLabel("Silence Threshold:", objectName="settingLabel"), row, 0)
+        grid.addWidget(QLabel("Silence Threshold:", objectName="settingLabel", alignment=Qt.AlignRight | Qt.AlignVCenter), row, 0)
         self.silence_spinbox = QSpinBox()
         self.silence_spinbox.setRange(50, 3000); self.silence_spinbox.setSingleStep(50)
         self.silence_spinbox.setValue(self.loaded_settings.get("silence_threshold", DEFAULT_SILENCE_THRESHOLD))
         grid.addWidget(self.silence_spinbox, row, 1)
         
-        grid.addWidget(QLabel("Typing Delay (s):", objectName="settingLabel"), row, 2)
+        grid.addWidget(QLabel("Typing Delay (s):", objectName="settingLabel", alignment=Qt.AlignRight | Qt.AlignVCenter), row, 2)
         self.delay_spinbox = QDoubleSpinBox()
         self.delay_spinbox.setRange(0.0, 0.1); self.delay_spinbox.setSingleStep(0.005); self.delay_spinbox.setDecimals(3)
         self.delay_spinbox.setValue(self.loaded_settings.get("char_delay", DEFAULT_CHAR_DELAY))
@@ -389,7 +407,7 @@ class OmniDictateApp(QMainWindow):
         # --- Hotkeys Section ---
         grid.addWidget(QLabel("Hotkeys", objectName="sectionHeader"), row, 0, 1, 2); row += 1
         
-        grid.addWidget(QLabel("PTT Hotkey:", objectName="settingLabel"), row, 0)
+        grid.addWidget(QLabel("PTT Hotkey:", objectName="settingLabel", alignment=Qt.AlignRight | Qt.AlignVCenter), row, 0)
         self.ptt_key_display_label = QLabel(self.format_key_name(self.loaded_settings.get('ptt_key_str', DEFAULT_PTT_KEY_STR)))
         self.ptt_key_display_label.setStyleSheet("color: #0A84FF; font-weight: bold;")
         self.set_ptt_key_button = QPushButton("Change")
@@ -400,12 +418,35 @@ class OmniDictateApp(QMainWindow):
         # --- Advanced Section ---
         grid.addWidget(QLabel("Advanced", objectName="sectionHeader"), row, 0, 1, 2); row += 1
         
+        # Audio Sensitivity (RMS Threshold)
+        grid.addWidget(QLabel("Audio Sensitivity:", objectName="settingLabel", alignment=Qt.AlignRight | Qt.AlignVCenter), row, 0)
+        self.rms_spinbox = QDoubleSpinBox()
+        self.rms_spinbox.setRange(0.001, 0.1); self.rms_spinbox.setSingleStep(0.005); self.rms_spinbox.setDecimals(3)
+        self.rms_spinbox.setValue(self.loaded_settings.get("rms_threshold", DEFAULT_RMS_THRESHOLD))
+        self.rms_spinbox.setToolTip("Minimum audio energy to trigger transcription. Higher = less sensitive to background noise. Recommended: 0.010")
+        grid.addWidget(self.rms_spinbox, row, 1)
+        
+        # Hallucination Filter Level (same row, columns 2-3)
+        grid.addWidget(QLabel("Hallucination Filter:", objectName="settingLabel", alignment=Qt.AlignRight | Qt.AlignVCenter), row, 2)
+        self.hallucination_combo = QComboBox()
+        self.hallucination_combo.addItems(["Low", "Medium", "High"])
+        self.hallucination_combo.setCurrentText(self.loaded_settings.get("hallucination_filter", DEFAULT_HALLUCINATION_FILTER))
+        self.hallucination_combo.setToolTip("Controls how aggressively phantom text from silence is suppressed. Low = permissive, High = aggressive. Recommended: Medium")
+        grid.addWidget(self.hallucination_combo, row, 3); row += 1
 
+        # Insertion Method
+        grid.addWidget(QLabel("Insertion Method:", objectName="settingLabel", alignment=Qt.AlignRight | Qt.AlignVCenter), row, 0)
+        self.insertion_combo = QComboBox()
+        self.insertion_combo.addItems(["Paste", "Typing"])
+        self.insertion_combo.setCurrentText(self.loaded_settings.get("insertion_method", DEFAULT_INSERTION_METHOD))
+        self.insertion_combo.setToolTip("Paste: Instant text input using clipboard (recommended for long text). Typing: Emulate keystrokes.")
+        grid.addWidget(self.insertion_combo, row, 1); row += 1
 
-        grid.addWidget(QLabel("Filter Words:", objectName="settingLabel"), row, 0, 1, 4); row += 1
+        grid.addWidget(QLabel("Filter Words:", objectName="settingLabel", alignment=Qt.AlignLeft | Qt.AlignVCenter), row, 0, 1, 4); row += 1
         self.filter_list = QListWidget()
         self.filter_list.addItems(self.loaded_settings.get("filter_words", DEFAULT_FILTER_WORDS))
-        self.filter_list.setFixedHeight(100)
+        self.filter_list.setFixedHeight(180)
+        self.filter_list.setSpacing(0)
         grid.addWidget(self.filter_list, row, 0, 1, 4); row += 1
         
         filter_controls = QHBoxLayout()
@@ -436,10 +477,23 @@ class OmniDictateApp(QMainWindow):
             "silence_threshold": self.settings.value("silence_threshold", DEFAULT_SILENCE_THRESHOLD, type=int),
             "char_delay": self.settings.value("char_delay", DEFAULT_CHAR_DELAY, type=float),
             "ptt_key_str": self.settings.value("ptt_key_str", DEFAULT_PTT_KEY_STR),
-
+            "rms_threshold": self.settings.value("rms_threshold", DEFAULT_RMS_THRESHOLD, type=float),
+            "hallucination_filter": self.settings.value("hallucination_filter", DEFAULT_HALLUCINATION_FILTER),
+            "insertion_method": self.settings.value("insertion_method", DEFAULT_INSERTION_METHOD),
             "filter_words": self.settings.value("filter_words", DEFAULT_FILTER_WORDS)
         }
 
+        # Sanitize model_size
+        valid_models = ["large-v3-turbo", "large-v3", "medium", "small", "base", "tiny"]
+        if self.loaded_settings["model_size"] not in valid_models:
+            print(f"Warning: Invalid model size '{self.loaded_settings['model_size']}', defaulting to {DEFAULT_MODEL_SIZE}")
+            self.loaded_settings["model_size"] = DEFAULT_MODEL_SIZE
+
+        # Sanitize language
+        valid_languages = [None, "", "None", "en", "es", "fr", "de", "it", "pt", "nl", "ru", "zh", "ja"]
+        if self.loaded_settings["language"] not in valid_languages:
+            print(f"Warning: Invalid language '{self.loaded_settings['language']}', defaulting to {DEFAULT_LANGUAGE}")
+            self.loaded_settings["language"] = DEFAULT_LANGUAGE
 
         if not isinstance(self.loaded_settings["filter_words"], list): self.loaded_settings["filter_words"] = DEFAULT_FILTER_WORDS
         print("Settings loaded:", self.loaded_settings)
@@ -454,6 +508,9 @@ class OmniDictateApp(QMainWindow):
         self.settings.setValue("silence_threshold", self.silence_spinbox.value())
         self.settings.setValue("char_delay", self.delay_spinbox.value())
         self.settings.setValue("ptt_key_str", self.loaded_settings.get('ptt_key_str', DEFAULT_PTT_KEY_STR)) # Keep internal string
+        self.settings.setValue("rms_threshold", self.rms_spinbox.value())
+        self.settings.setValue("hallucination_filter", self.hallucination_combo.currentText())
+        self.settings.setValue("insertion_method", self.insertion_combo.currentText())
         
 
         filter_words = [self.filter_list.item(i).text() for i in range(self.filter_list.count())]
@@ -462,6 +519,19 @@ class OmniDictateApp(QMainWindow):
         self.load_settings()
         self.model_display_label.setText(f"Model: {self.loaded_settings['model_size']}") 
         if not self.is_dictation_running: self.restart_hotkey_listener()
+        # Push updated settings to the live worker if it exists
+        if self.dictation_worker:
+            self.settings_updated_signal.emit({
+                "model_size": self.loaded_settings["model_size"],
+                "language": self.loaded_settings["language"],
+                "silence_threshold": self.loaded_settings["silence_threshold"],
+                "char_delay": self.loaded_settings["char_delay"],
+                "vad_enabled": self.loaded_settings["vad_enabled"],
+                "filter_words": self.loaded_settings.get("filter_words", []),
+                "rms_threshold": self.loaded_settings["rms_threshold"],
+                "hallucination_filter": self.loaded_settings["hallucination_filter"],
+                "insertion_method": self.loaded_settings["insertion_method"]
+            })
 
     @Slot()
     def restore_default_settings(self):
@@ -471,6 +541,9 @@ class OmniDictateApp(QMainWindow):
         self.vad_toggle_button.setChecked(DEFAULT_VAD_ENABLED)
         self.silence_spinbox.setValue(DEFAULT_SILENCE_THRESHOLD)
         self.delay_spinbox.setValue(DEFAULT_CHAR_DELAY)
+        self.rms_spinbox.setValue(DEFAULT_RMS_THRESHOLD)
+        self.hallucination_combo.setCurrentText(DEFAULT_HALLUCINATION_FILTER)
+        self.insertion_combo.setCurrentText(DEFAULT_INSERTION_METHOD)
         self.settings.setValue("ptt_key_str", DEFAULT_PTT_KEY_STR)
         
         self.ptt_key_display_label.setText(self.format_key_name(DEFAULT_PTT_KEY_STR))
@@ -584,6 +657,9 @@ class OmniDictateApp(QMainWindow):
         self.statusBar.showMessage(status_text)
         # Update hint label based on status if needed
         if "Listening" in status_text:
+             if self.last_start_click_time > 0:
+                 print(f"Startup latency: {time.time() - self.last_start_click_time:.2f}s")
+                 self.last_start_click_time = 0
              self.update_vad_button_style() # Refresh hint text logic
 
     @Slot(str)
@@ -609,6 +685,11 @@ class OmniDictateApp(QMainWindow):
         if self.is_dictation_running: self.stop_dictation()
         else: self.reset_ui_after_stop()
 
+    @Slot(str)
+    def show_warning(self, warning_text):
+        print(f"GUI Warning: {warning_text}")
+        self.statusBar.showMessage(f"Warning: {warning_text}", 5000)
+
     # --- Copy Transcription ---
     @Slot()
     def copy_transcription(self):
@@ -618,39 +699,61 @@ class OmniDictateApp(QMainWindow):
         self.statusBar.showMessage("Transcription copied to clipboard!", 2000)
 
     # --- GUI Control Methods ---
-    def start_dictation(self):
-        if self.is_dictation_running: print("Dictation is already running."); return
-        if isinstance(self.dictation_thread, QThread) or isinstance(self.dictation_worker, DictationWorker):
-            print("Warning: Remnants of previous thread/worker found.")
-            if self.dictation_thread and self.dictation_thread.isRunning():
-                 print("Error: Previous thread still running. Aborting start.")
-                 QMessageBox.critical(self, "Error", "Previous dictation process still running. Please wait or restart.")
-                 return
-            else: self.dictation_worker = None; self.dictation_thread = None
-        self.save_settings()
-        print(f"Attempting to start dictation with model: {self.loaded_settings['model_size']}")
+    def _ensure_worker_created(self):
+        """Create the worker and thread once. They persist until app close."""
+        if self.dictation_thread and self.dictation_worker:
+            return  # Already created
+        # Clean up any partial remnants
+        if self.dictation_thread and self.dictation_thread.isRunning():
+            print("Error: Previous thread still running. Aborting.")
+            QMessageBox.critical(self, "Error", "Previous dictation process still running. Please wait or restart.")
+            return
+        self.dictation_worker = None; self.dictation_thread = None
+
+        print("Creating persistent dictation worker and thread...")
         self.dictation_thread = QThread(self)
         self.dictation_worker = DictationWorker(
             gui_wid=int(self.winId()), model_size=self.loaded_settings['model_size'],
             language=self.loaded_settings['language'], vad_enabled=self.loaded_settings['vad_enabled'],
             silence_threshold=self.loaded_settings['silence_threshold'], silence_duration=0.5,
-            char_delay=self.loaded_settings['char_delay'], filter_words=self.loaded_settings['filter_words']
+            char_delay=self.loaded_settings['char_delay'], filter_words=self.loaded_settings['filter_words'],
+            rms_threshold=self.loaded_settings['rms_threshold'],
+            hallucination_filter=self.loaded_settings['hallucination_filter'],
+            insertion_method=self.loaded_settings['insertion_method']
         )
         self.dictation_worker.moveToThread(self.dictation_thread)
+        # Connect worker signals
         self.dictation_worker.status_updated.connect(self.update_status)
         self.dictation_worker.transcription_ready.connect(self.handle_transcription)
         self.dictation_worker.error_occurred.connect(self.show_error)
-        self.dictation_worker.audio_level.connect(self.update_visualizer) 
-        self.dictation_thread.started.connect(self.dictation_worker.start_processing)
+        self.dictation_worker.warning_occurred.connect(self.show_warning)
+        self.dictation_worker.audio_level.connect(self.update_visualizer)
+        # Connect control signals
+        self.ptt_signal.connect(self.dictation_worker.set_ptt_state)
+        self.settings_updated_signal.connect(self.dictation_worker.update_settings)
+        # Clean up only when thread actually finishes (app close)
         self.dictation_thread.finished.connect(self.dictation_worker.deleteLater)
         self.dictation_thread.finished.connect(self.dictation_thread.deleteLater)
-        self.dictation_thread.finished.connect(self.on_thread_finished)
-        self.ptt_signal.connect(self.dictation_worker.set_ptt_state)
+        self.dictation_thread.finished.connect(self._on_worker_destroyed)
+        # Start thread event loop (worker stays alive, waiting for signals)
+        self.dictation_thread.start()
+        print("Persistent worker thread started.")
+
+    def start_dictation(self):
+        if self.is_dictation_running: print("Dictation is already running."); return
+        self.last_start_click_time = time.time()
+        self.save_settings()
+        print(f"Attempting to start dictation with model: {self.loaded_settings['model_size']}")
+        self._ensure_worker_created()
+        if not self.dictation_worker: return  # Creation failed
+        # Invoke start_processing on the worker's thread
+        from PySide6.QtCore import QMetaObject, Q_ARG
+        QMetaObject.invokeMethod(self.dictation_worker, "start_processing")
         self.update_status("Initializing..."); self.start_button.setEnabled(False); self.stop_button.setEnabled(True)
         self.set_config_enabled(False)
-        self.dictation_thread.start(); self.is_dictation_running = True
-        self.update_vad_button_style() # Update hint
-        print("Dictation thread initiated.")
+        self.is_dictation_running = True
+        self.update_vad_button_style()
+        print("Dictation started.")
 
     def stop_dictation(self):
         if not self.is_dictation_running and self.start_button.isEnabled(): print("Stop called but already stopped."); return
@@ -659,26 +762,30 @@ class OmniDictateApp(QMainWindow):
         print("GUI requesting stop..."); self.update_status("Stopping...")
         self.stop_button.setEnabled(False)
         if self.dictation_worker:
-            try:
-                self.ptt_signal.disconnect(self.dictation_worker.set_ptt_state)
-            except RuntimeError:
-                pass 
-        if self.dictation_worker: self.dictation_worker.stop_processing()
+            from PySide6.QtCore import QMetaObject
+            QMetaObject.invokeMethod(self.dictation_worker, "stop_processing")
+        self.is_dictation_running = False
+        self.reset_ui_after_stop()
+        self.visualizer.setValue(0)
+        self.update_vad_button_style()
+        self._is_stopping = False
+        print("Dictation stopped. Worker and model remain in memory.")
+
+    def _destroy_worker(self):
+        """Fully destroy the persistent worker and thread (for app close)."""
+        if self.dictation_worker:
+            from PySide6.QtCore import QMetaObject
+            QMetaObject.invokeMethod(self.dictation_worker, "stop_processing")
         if self.dictation_thread and self.dictation_thread.isRunning():
             self.dictation_thread.quit()
-            if not self.dictation_thread.wait(1500): print("Warning: Dictation thread didn't finish quitting."); self.on_thread_finished(force_reset=True)
-        else: self.on_thread_finished(force_reset=True)
-        self._is_stopping = False
+            if not self.dictation_thread.wait(2000):
+                print("Warning: Dictation thread didn't finish quitting.")
+        # References are cleared in _on_worker_destroyed via finished signal
 
     @Slot()
-    def on_thread_finished(self, force_reset=False):
-        print("Dictation thread finished signal received or stop forced.")
-        if self.is_dictation_running or force_reset:
-            self.is_dictation_running = False; self.reset_ui_after_stop()
+    def _on_worker_destroyed(self):
+        print("Dictation worker/thread destroyed.")
         self.dictation_worker = None; self.dictation_thread = None
-        self.visualizer.setValue(0)
-        self.update_vad_button_style() # Reset hint
-        print("Dictation worker/thread references cleared.")
 
     def reset_ui_after_stop(self):
         self.start_button.setEnabled(True); self.stop_button.setEnabled(False)
@@ -751,15 +858,10 @@ class OmniDictateApp(QMainWindow):
         """Ensure threads are stopped when the window is closed."""
         print("Close event triggered.")
         self.save_settings()
-        self.stop_dictation()
+        if self.is_dictation_running:
+            self.stop_dictation()
+        self._destroy_worker()  # Fully tear down the persistent worker
         self.stop_hotkey_listener()
-        if isinstance(self.dictation_thread, QThread) and self.dictation_thread.isRunning():
-             print("Waiting for dictation thread...")
-             start_wait = time.time()
-             while self.dictation_thread.isRunning() and (time.time() - start_wait) < 1.5:
-                 QApplication.processEvents()
-                 time.sleep(0.05)
-             if self.dictation_thread.isRunning(): print("Warning: Dictation thread still running.")
         if isinstance(self.hotkey_thread, QThread) and self.hotkey_thread.isRunning():
              print("Waiting for hotkey thread...")
              start_wait = time.time()
