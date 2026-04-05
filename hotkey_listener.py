@@ -28,7 +28,18 @@ class HotkeyWorker(QObject):
         # Parse PTT Key
         if self.ptt_key_str:
             try: 
-                self.ptt_key = eval(self.ptt_key_str, {"keyboard": keyboard, "Key": keyboard.Key, "KeyCode": keyboard.KeyCode})
+                key_str = self.ptt_key_str.strip()
+                if key_str.startswith('keyboard.Key.'):
+                    key_name = key_str.split('.')[-1]
+                    self.ptt_key = getattr(keyboard.Key, key_name)
+                elif key_str.startswith('keyboard.KeyCode.from_char('):
+                    char = key_str.split("'")[1]
+                    self.ptt_key = keyboard.KeyCode.from_char(char)
+                elif key_str.startswith('keyboard.KeyCode(vk='):
+                    vk_str = key_str.split("=")[1].replace(")", "").strip()
+                    self.ptt_key = keyboard.KeyCode(vk=int(vk_str))
+                else:
+                    raise ValueError(f"Unsupported key format: {key_str}")
             except Exception as e: 
                 error_msg = f"Error parsing PTT key '{self.ptt_key_str}': {e}. Using default."
                 print(error_msg); self.error_signal.emit(error_msg); self.ptt_key = default_ptt

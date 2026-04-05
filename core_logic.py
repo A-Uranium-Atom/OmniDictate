@@ -6,6 +6,7 @@ import threading
 import sys
 import os
 import queue
+import psutil
 import re
 
 # Third-party library imports
@@ -25,6 +26,13 @@ CHUNK_DURATION = 0.02
 CHUNK_SIZE = int(SAMPLE_RATE * CHUNK_DURATION)
 # CHAR_DELAY passed via __init__
 
+# Hallucination filter presets: (no_speech_threshold, log_prob_threshold)
+HALLUCINATION_LEVELS = {
+    "Low":    {"no_speech_threshold": 0.8, "log_prob_threshold": -1.5},
+    "Medium": {"no_speech_threshold": 0.6, "log_prob_threshold": -1.0},  # Recommended
+    "High":   {"no_speech_threshold": 0.4, "log_prob_threshold": -0.7},
+}
+
 # --- Helper Functions ---
 def get_punctuation_char(punctuation_name):
     """Returns the punctuation character based on a verbal command."""
@@ -37,11 +45,13 @@ class DictationWorker(QObject):
     status_updated = Signal(str)
     transcription_ready = Signal(str)
     error_occurred = Signal(str)
+    warning_occurred = Signal(str)
     audio_level = Signal(float)
 
     def __init__(self, gui_wid, model_size="large-v3", language="en", vad_enabled=True,
                  silence_threshold=500, silence_duration=0.5, char_delay=0.02,
-                 filter_words=None, parent=None):
+                 filter_words=None, rms_threshold=0.01, hallucination_filter="Medium",
+                 insertion_method="Paste", parent=None):
         super().__init__(parent)
         self.gui_wid = gui_wid
         self.model_size = model_size
@@ -54,7 +64,14 @@ class DictationWorker(QObject):
         self.char_delay = char_delay
         self.filter_words = set(word.lower().strip() for word in filter_words) if filter_words else set()
         
-        print(f"Worker Init: Filter Words={len(self.filter_words)}")
+        # Hallucination prevention settings
+        self.rms_threshold = rms_threshold
+        self.hallucination_filter = hallucination_filter
+        self.insertion_method = insertion_method
+        self._last_transcript = ""
+        self._repeat_count = 0
+        
+        print(f"Worker Init: Filter Words={len(self.filter_words)}, RMS Threshold={self.rms_threshold}, Hallucination Filter={self.hallucination_filter}, Insertion Method={self.insertion_method}")
 
         self.model = None
         self.audio_stream = None
@@ -89,6 +106,34 @@ class DictationWorker(QObject):
             print("Recording stopped (PTT Release). Transcribing...")
             self.recording = False
             self._process_audio_buffer()
+
+    @Slot(dict)
+    def update_settings(self, settings: dict):
+        """Dynamically update worker settings. Only reloads model if model_size changed."""
+        print("Worker: Applying dynamic settings update.")
+        if "language" in settings:
+            lang = settings["language"]
+            self.language_code = None if lang in ["None", ""] else lang
+        if "silence_threshold" in settings:
+            self.silence_threshold = settings["silence_threshold"]
+        if "char_delay" in settings:
+            self.char_delay = settings["char_delay"]
+        if "filter_words" in settings:
+            self.filter_words = set(word.lower().strip() for word in settings["filter_words"])
+        if "vad_enabled" in settings:
+            self.set_vad_enabled(settings["vad_enabled"])
+        if "rms_threshold" in settings:
+            self.rms_threshold = settings["rms_threshold"]
+        if "hallucination_filter" in settings:
+            self.hallucination_filter = settings["hallucination_filter"]
+        if "insertion_method" in settings:
+            self.insertion_method = settings["insertion_method"]
+        new_model = settings.get("model_size")
+        if new_model and new_model != self.model_size:
+            print(f"Model size changed: {self.model_size} -> {new_model}. Reloading model...")
+            self.model_size = new_model
+            if self.model:
+                self.load_model(force_reload=True)
 
     # --- Core Logic Methods ---
     def load_model(self, force_reload=False):
@@ -141,7 +186,7 @@ class DictationWorker(QObject):
     @Slot()
     def start_processing(self):
         if self._is_running: return
-        if not self.load_model(force_reload=True): self.error_occurred.emit("Model failed to load."); return
+        if not self.load_model(force_reload=False): self.error_occurred.emit("Model failed to load."); return
 
         self._is_running = True; self.status_updated.emit("Starting...")
         self.audio_buffer = []; self.recording = False; self.vad_active = False; self.frames_since_speech = 0
@@ -203,13 +248,8 @@ class DictationWorker(QObject):
             except Exception as e: break
         print("Queues cleared.")
 
-        if self.model:
-            print("Unloading model...")
-            try:
-                del self.model; self.model = None
-                if torch.cuda.is_available(): print("Clearing CUDA cache..."); torch.cuda.empty_cache()
-                print("Model unloaded.")
-            except Exception as e: print(f"Error during model unload: {e}")
+        # Model is intentionally kept loaded in memory for instant restart.
+        # It will only be reloaded when model_size changes via update_settings().
 
         self.recording = False; self.vad_active = False; self.audio_buffer = []
         print("Worker processing stopped."); self.status_updated.emit("Idle")
@@ -252,21 +292,67 @@ class DictationWorker(QObject):
         except ValueError: print("Error concatenating buffer copy."); return
         if audio_float32.size == 0: print("Concatenated audio empty."); return
 
+        # --- Layer 1: Pre-transcription RMS energy gate ---
+        rms_energy = np.sqrt(np.mean(audio_float32 ** 2))
+        if rms_energy < self.rms_threshold:
+            print(f"Skipping transcription: buffer RMS too low ({rms_energy:.4f} < {self.rms_threshold})")
+            if self._is_running and not self.recording and not self._ptt_active: self.status_updated.emit("Listening...")
+            return
+
         start_time = time.time(); transcribed_text = ""
         try:
             if not self.model: self.error_occurred.emit("Model not loaded."); return
-            segments, info = self.model.transcribe(audio_float32, beam_size=5, language=self.language_code, temperature=0.0, condition_on_previous_text=False)
-            transcribed_text = "".join(segment.text for segment in segments)
+
+            # --- Layer 2: Silero VAD + no_speech/log_prob thresholds ---
+            h_level = HALLUCINATION_LEVELS.get(self.hallucination_filter, HALLUCINATION_LEVELS["Medium"])
+            segments, info = self.model.transcribe(
+                audio_float32,
+                beam_size=5,
+                language=self.language_code,
+                temperature=0.0,
+                condition_on_previous_text=False,
+                vad_filter=True,
+                no_speech_threshold=h_level["no_speech_threshold"],
+                log_prob_threshold=h_level["log_prob_threshold"],
+            )
+
+            # --- Layer 2.5: Per-segment confidence filtering ---
+            segments_list = list(segments)
+            good_segments = [s for s in segments_list if s.no_speech_prob < h_level["no_speech_threshold"]]
+            transcribed_text = "".join(s.text for s in good_segments)
         except Exception as e: error_msg = f"Transcription error: {e}"; print(error_msg); self.error_occurred.emit(error_msg); return
         finally:
              if self._is_running and not self.recording and not self._ptt_active: self.status_updated.emit("Listening...")
         end_time = time.time()
 
         processed_text = transcribed_text.strip()
-        if processed_text.lower() in self.filter_words: print(f"Filtered out phrase: '{processed_text}'"); return
+
+        # --- Layer 3: Improved post-transcription filtering ---
+        # Normalized matching (strip trailing punctuation before comparing)
+        text_normalized = processed_text.lower().strip().rstrip('.!?,;: ')
+        if any(text_normalized == fw.rstrip('.!?,;: ') for fw in self.filter_words):
+            print(f"Filtered out hallucination: '{processed_text}'"); return
+
+        # Repetition detection — same text 3+ times in a row is almost certainly hallucination
+        if text_normalized and text_normalized == self._last_transcript:
+            self._repeat_count += 1
+            if self._repeat_count >= 2:
+                print(f"Filtered out repeated hallucination: '{processed_text}' (x{self._repeat_count + 1})")
+                return
+        else:
+            self._repeat_count = 0
+        self._last_transcript = text_normalized
 
         if processed_text:
             print(f"Transcribed: {processed_text} (Latency: {end_time - start_time:.2f}s)")
+            try:
+                process = psutil.Process(os.getpid())
+                ram_mb = process.memory_info().rss / (1024 * 1024)
+                vram_mb = torch.cuda.memory_reserved() / (1024 * 1024) if torch.cuda.is_available() else 0
+                print(f"Memory Usage - RAM: {ram_mb:.1f} MB | VRAM: {vram_mb:.1f} MB")
+            except Exception as mem_e:
+                print(f"Error checking memory: {mem_e}")
+                
             self.transcription_ready.emit(processed_text)
 
             text_lower = processed_text.lower(); is_command = False
@@ -280,6 +366,78 @@ class DictationWorker(QObject):
                         is_command = True
             
             if not is_command: self.text_queue.put(processed_text + " ")
+
+    def _paste_text(self, text, keyboard_controller):
+        import time
+        import win32clipboard
+        from pynput import keyboard
+
+        clipboard_backup = {}
+        fallback_to_typing = False
+
+        # 1. Backup all clipboard formats
+        try:
+            win32clipboard.OpenClipboard()
+            format_id = win32clipboard.EnumClipboardFormats(0)
+            while format_id:
+                # 15 is CF_HDROP (File copy). Hard to safely restore in raw python.
+                if format_id == 15:
+                    fallback_to_typing = True
+                    break
+                try:
+                    data = win32clipboard.GetClipboardData(format_id)
+                    if data is not None:
+                        clipboard_backup[format_id] = data
+                except Exception:
+                    fallback_to_typing = True
+                    break
+                format_id = win32clipboard.EnumClipboardFormats(format_id)
+        except Exception:
+            fallback_to_typing = True
+        finally:
+            try: win32clipboard.CloseClipboard()
+            except: pass
+
+        if fallback_to_typing:
+            self.warning_occurred.emit("Complex clipboard object detected. Falling back to typing to protect clipboard.")
+            return False # Signal calling loop to use typing method
+
+        # 2. Set new text
+        try:
+            win32clipboard.OpenClipboard()
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardData(win32clipboard.CF_UNICODETEXT, text)
+            win32clipboard.CloseClipboard()
+        except Exception as e:
+            print(f"Error setting clipboard: {e}")
+            try: win32clipboard.CloseClipboard()
+            except: pass
+            return False
+            
+        # 3. Simulate Ctrl+V
+        time.sleep(0.05) # Small delay for OS to register new clipboard
+        keyboard_controller.press(keyboard.Key.ctrl)
+        keyboard_controller.press('v')
+        keyboard_controller.release('v')
+        keyboard_controller.release(keyboard.Key.ctrl)
+        time.sleep(0.1) # Let the app process the paste
+
+        # 4. Restore backup
+        if clipboard_backup:
+            try:
+                win32clipboard.OpenClipboard()
+                win32clipboard.EmptyClipboard()
+                for fmt, data in clipboard_backup.items():
+                    # Catch individual format restore errors so we don't abort midway
+                    try: win32clipboard.SetClipboardData(fmt, data)
+                    except Exception: pass 
+            except Exception:
+                pass
+            finally:
+                try: win32clipboard.CloseClipboard()
+                except: pass
+        
+        return True
 
     def _typing_loop(self):
         print("Typing thread started, ID:", threading.get_ident())
@@ -296,13 +454,22 @@ class DictationWorker(QObject):
                     try:
                         hwnd = ctypes.windll.user32.GetForegroundWindow()
                         if hwnd == self.gui_wid: print("Skipping typing: OmniDictate window active."); continue
-                        for char in text_to_type:
-                            if not self._is_running or self.stop_typing_event.is_set(): break
-                            keyboard_controller.press(char)
-
-                            keyboard_controller.release(char)
-                            time.sleep(self.char_delay)
-                    except Exception as e: error_msg = f"Error typing text: {e}"; print(error_msg); self.error_occurred.emit(error_msg)
+                        
+                        paste_successful = False
+                        if self.insertion_method == "Paste":
+                            paste_successful = self._paste_text(text_to_type, keyboard_controller)
+                        
+                        if not paste_successful:
+                            # Optimized typing logic
+                            if self.char_delay <= 0.001:
+                                keyboard_controller.type(text_to_type)
+                            else:
+                                for char in text_to_type:
+                                    if not self._is_running or self.stop_typing_event.is_set(): break
+                                    keyboard_controller.press(char)
+                                    keyboard_controller.release(char)
+                                    time.sleep(self.char_delay)
+                    except Exception as e: error_msg = f"Error inserting text: {e}"; print(error_msg); self.error_occurred.emit(error_msg)
                 except queue.Empty: continue
                 except Exception as e: error_msg = f"Typing queue error: {e}"; print(error_msg); self.error_occurred.emit(error_msg); time.sleep(0.1)
         finally:
