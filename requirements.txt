@@ -1,5 +1,7 @@
+--extra-index-url https://download.pytorch.org/whl/cu124
 numpy
 torch
+psutil
 sounddevice
 faster-whisper
 pynput
