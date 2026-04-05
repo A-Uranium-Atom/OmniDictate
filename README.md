@@ -1,4 +1,4 @@
-﻿# OmniDictate: Real-time AI Dictation GUI for Windows ![Logo](images/App_icon.png)
+# OmniDictate: Real-time AI Dictation GUI for Windows ![Logo](images/App_icon.png)
 
 [![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC_BY--NC_4.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
 
@@ -50,7 +50,7 @@ Before installing, ensure your system meets these requirements.
     *   [**Download Visual Studio 2015-2022 Redistributable (x64)**](https://aka.ms/vs/17/release/vc_redist.x64.exe)
 *   **NVIDIA Users (Critical):** If you intend to use GPU acceleration, you **MUST** install the following *before* running the application:
     1.  **NVIDIA Driver:** [Download Latest Driver](https://www.nvidia.com/Download/index.aspx)
-    2.  **CUDA Toolkit 12.6:** [Download from NVIDIA Archive](https://developer.nvidia.com/cuda-12-6-0-download-archive)
+    2.  **CUDA Toolkit 12.4:** [Download from NVIDIA Archive](https://developer.nvidia.com/cuda-12-4-0-download-archive)
     3.  **Verify:** Ensure `nvcc --version` works in your terminal.
 
 ## Installation & Downloads
@@ -110,8 +110,8 @@ The pre-built application was compiled with the following versions. If you are b
 | Component | Version | Notes |
 | :--- | :--- | :--- |
 | **Python** | 3.11.9 | [Download](https://www.python.org/downloads/release/python-3119/) |
-| **PyTorch** | 2.6.0+cu126 | [Get Started](https://pytorch.org/get-started/locally/) or (pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu126) |
-| **CUDA Toolkit** | 12.6 | [Download](https://developer.nvidia.com/cuda-12-6-0-download-archive) |
+| **PyTorch** | 2.6.0+cu124 | [Get Started](https://pytorch.org/get-started/locally/) or (pip install torch==2.6.0 torchvision==1.1.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124) |
+| **CUDA Toolkit** | 12.4 | [Download](https://developer.nvidia.com/cuda-12-4-0-download-archive) |
 | **faster-whisper** | 1.1.1 | [Source](https://github.com/SYSTRAN/faster-whisper/releases) |
 | **ctranslate2** | 4.5.0 | [Source](https://github.com/OpenNMT/CTranslate2/releases) |
 
@@ -124,7 +124,7 @@ If you prefer to build from source:
 3.  **Create & Activate Venv:** `python -m venv venv` and activate it.
 4.  **Install PyTorch (CUDA Version):**
     ```bash
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
     ```
 5.  **Install Other Dependencies:** `pip install -r requirements.txt`
 6.  **Run:** `python main_gui.py`
