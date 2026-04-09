@@ -8,6 +8,7 @@ import os
 import queue
 import psutil
 import re
+import concurrent.futures
 
 # Third-party library imports
 import numpy as np
@@ -22,8 +23,9 @@ from PySide6.QtCore import QObject, Signal, QTimer, Slot
 
 # --- Configuration Constants ---
 SAMPLE_RATE = 16000
-CHUNK_DURATION = 0.02
+CHUNK_DURATION = 0.05 # Increased from 0.02 to reduce overhead and overflows
 CHUNK_SIZE = int(SAMPLE_RATE * CHUNK_DURATION)
+MAX_RECORDING_SECONDS = 60.0 # Force-flush long recordings to prevent TDR/OOM
 # CHAR_DELAY passed via __init__
 
 # Hallucination filter presets: (no_speech_threshold, log_prob_threshold)
@@ -87,7 +89,13 @@ class DictationWorker(QObject):
         self.stop_typing_event = threading.Event()
         self.audio_check_timer = QTimer(self)
         self.audio_check_timer.timeout.connect(self._check_audio_queue)
-        self.audio_check_interval = 50
+        self.audio_check_interval = 100 # Adjusted for 50ms chunks
+        
+        # New stability counters
+        self.overflow_count = 0
+        self.last_audio_time = time.time()
+        self.transcription_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.is_transcribing = False
 
     # --- Public Slots ---
     @Slot(bool)
@@ -211,12 +219,29 @@ class DictationWorker(QObject):
         try:
             device_info = sd.query_devices(kind='input')
             self.status_updated.emit(f"Using device: {device_info['name']}")
+            self.overflow_count = 0; self.last_audio_time = time.time()
             self.audio_stream = sd.InputStream(samplerate=SAMPLE_RATE, blocksize=CHUNK_SIZE, device=None, channels=1, dtype='int16', callback=self._audio_callback)
             self.audio_stream.start()
             self.status_updated.emit("Listening...")
             self.audio_check_timer.start(self.audio_check_interval)
         except sd.PortAudioError as pae: error_msg = f"PortAudio Error: {pae}"; print(error_msg); self.error_occurred.emit(error_msg); self.stop_processing()
         except Exception as e: error_msg = f"Audio stream error: {e}"; print(error_msg); self.error_occurred.emit(error_msg); self.stop_processing()
+
+    def _restart_stream(self):
+        """Silently restarts the audio stream to recover from sleep or system changes."""
+        if not self._is_running: return
+        print("Stability: Restarting audio stream...")
+        try:
+            if self.audio_stream:
+                self.audio_stream.stop(); self.audio_stream.close()
+            self.overflow_count = 0; self.last_audio_time = time.time()
+            self.audio_stream = sd.InputStream(samplerate=SAMPLE_RATE, blocksize=CHUNK_SIZE, device=None, channels=1, dtype='int16', callback=self._audio_callback)
+            self.audio_stream.start()
+            print("Stability: Stream restarted successfully.")
+        except Exception as e:
+            print(f"Stability: Error restarting stream: {e}")
+            self.error_occurred.emit(f"Failed to recover audio stream: {e}")
+            self.stop_processing()
 
     @Slot()
     def stop_processing(self):
@@ -242,22 +267,27 @@ class DictationWorker(QObject):
             try: self.audio_queue.get_nowait()
             except queue.Empty: break
             except Exception as e: break
-        while True:
-            try: self.text_queue.get_nowait()
-            except queue.Empty: break
-            except Exception as e: break
-        print("Queues cleared.")
-
-        # Model is intentionally kept loaded in memory for instant restart.
-        # It will only be reloaded when model_size changes via update_settings().
+        # Cleanly shut down transcription executor if still running
+        if self.transcription_executor:
+            self.transcription_executor.shutdown(wait=False)
+            self.transcription_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
         self.recording = False; self.vad_active = False; self.audio_buffer = []
         print("Worker processing stopped."); self.status_updated.emit("Idle")
 
     # --- Internal Methods ---
-    def _audio_callback(self, indata, frames, time, status):
-        if status: error_msg = f"Audio Callback Error: {status}"; print(error_msg, file=sys.stderr)
-        if self._is_running: self.audio_queue.put(bytes(indata))
+    def _audio_callback(self, indata, frames, time_info, status):
+        self.last_audio_time = time.time()
+        if status:
+            if status.input_overflow:
+                self.overflow_count += 1
+                if self.overflow_count % 10 == 0: # Log every 10th overflow to avoid spamming
+                    print(f"Audio Callback Warning: Input overflow x{self.overflow_count}", file=sys.stderr)
+            else:
+                print(f"Audio Callback Error: {status}", file=sys.stderr)
+        
+        if self._is_running: 
+            self.audio_queue.put(bytes(indata))
 
     @Slot()
     def _check_audio_queue(self):
@@ -281,7 +311,19 @@ class DictationWorker(QObject):
                         if amplitude > self.silence_threshold: self.frames_since_speech = 0; self.audio_buffer.append(chunk_np)
                         else:
                             self.frames_since_speech += 1
-                            if self.frames_since_speech > self.silence_frames: self.status_updated.emit("Transcribing (VAD)..."); self.recording = False; self.vad_active = False; self._process_audio_buffer()
+                            is_silent = self.frames_since_speech > self.silence_frames
+                            is_too_long = (len(self.audio_buffer) * CHUNK_DURATION) > MAX_RECORDING_SECONDS
+                            
+                            if is_silent or is_too_long:
+                                if is_too_long: print("Safety: Recording reached limit, force-transcribing.")
+                                self.status_updated.emit("Transcribing...")
+                                self.recording = False; self.vad_active = False; self._process_audio_buffer()
+
+            # Stability check: Restart if audio callback seems dead or heavily overflowing
+            idle_time = time.time() - self.last_audio_time
+            if (idle_time > 2.0 or self.overflow_count > 50) and not self.is_transcribing:
+                print(f"Stability Warning: Audio stream appears stalled (idle: {idle_time:.1f}s, overflows: {self.overflow_count}). Restarting...")
+                self._restart_stream()
         except queue.Empty: pass
         except Exception as e: error_msg = f"Audio check loop error: {e}"; print(error_msg); self.error_occurred.emit(error_msg)
 
@@ -299,12 +341,18 @@ class DictationWorker(QObject):
             if self._is_running and not self.recording and not self._ptt_active: self.status_updated.emit("Listening...")
             return
 
+        h_level = HALLUCINATION_LEVELS.get(self.hallucination_filter, HALLUCINATION_LEVELS["Medium"])
+        
+        # Offload transcription to background thread to keep queue consumer responsive
+        self.is_transcribing = True
+        self.transcription_executor.submit(self._transcription_task, audio_float32, h_level)
+
+    def _transcription_task(self, audio_float32, h_level):
+        """The heavy transcription workload running in a background executor."""
         start_time = time.time(); transcribed_text = ""
         try:
-            if not self.model: self.error_occurred.emit("Model not loaded."); return
-
-            # --- Layer 2: Silero VAD + no_speech/log_prob thresholds ---
-            h_level = HALLUCINATION_LEVELS.get(self.hallucination_filter, HALLUCINATION_LEVELS["Medium"])
+            if not self.model: return
+            
             segments, info = self.model.transcribe(
                 audio_float32,
                 beam_size=5,
@@ -320,10 +368,18 @@ class DictationWorker(QObject):
             segments_list = list(segments)
             good_segments = [s for s in segments_list if s.no_speech_prob < h_level["no_speech_threshold"]]
             transcribed_text = "".join(s.text for s in good_segments)
-        except Exception as e: error_msg = f"Transcription error: {e}"; print(error_msg); self.error_occurred.emit(error_msg); return
+            
+            self._finalize_transcription(transcribed_text, time.time() - start_time)
+        except Exception as e: 
+            error_msg = f"Transcription error: {e}"; print(error_msg)
+            self.error_occurred.emit(error_msg)
         finally:
-             if self._is_running and not self.recording and not self._ptt_active: self.status_updated.emit("Listening...")
-        end_time = time.time()
+            self.is_transcribing = False
+            if self._is_running and not self.recording and not self._ptt_active: 
+                self.status_updated.emit("Listening...")
+
+    def _finalize_transcription(self, transcribed_text, latency):
+        """Post-processing and UI updates after background transcription finishes."""
 
         processed_text = transcribed_text.strip()
 
@@ -344,7 +400,7 @@ class DictationWorker(QObject):
         self._last_transcript = text_normalized
 
         if processed_text:
-            print(f"Transcribed: {processed_text} (Latency: {end_time - start_time:.2f}s)")
+            print(f"Transcribed: {processed_text} (Latency: {latency:.2f}s)")
             try:
                 process = psutil.Process(os.getpid())
                 ram_mb = process.memory_info().rss / (1024 * 1024)
