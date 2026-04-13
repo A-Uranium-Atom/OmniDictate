@@ -10,6 +10,14 @@ import psutil
 import re
 import concurrent.futures
 
+# Windows power-event monitoring (wake-from-sleep detection)
+try:
+    import win32gui
+    import win32con
+    _WIN32_AVAILABLE = True
+except ImportError:
+    _WIN32_AVAILABLE = False
+
 # Third-party library imports
 import numpy as np
 import torch
@@ -40,6 +48,58 @@ def get_punctuation_char(punctuation_name):
     """Returns the punctuation character based on a verbal command."""
     pmap = {"question mark": "?", "exclamation mark": "!", "comma": ",", "period": ".", "full stop": ".", "colon": ":", "semicolon": ";", "open parenthesis": "(", "close parenthesis": ")", "open bracket": "[", "close bracket": "]", "open brace": "{", "close brace": "}", "hyphen": "-", "dash": "-", "underscore": "_", "plus": "+", "equals": "=", "at": "@", "hash": "#", "dollar": "$", "percent": "%", "caret": "^", "ampersand": "&", "asterisk": "*"}
     return pmap.get(punctuation_name.lower())
+
+
+# --- Power-Event Monitor ---
+class _PowerMonitor:
+    """
+    Runs a hidden Win32 message-only window in a background daemon thread.
+    Calls `on_resume()` the instant Windows sends PBT_APMRESUMEAUTOMATIC
+    (the very first event fired on every wake-from-sleep).
+    """
+
+    def __init__(self, on_resume):
+        self._on_resume = on_resume
+        self._hwnd = None
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name="PowerMonitorThread")
+
+    def start(self):
+        self._thread.start()
+
+    def stop(self):
+        # Post a WM_QUIT to the hidden window's message loop so the thread exits
+        if self._hwnd:
+            try:
+                win32gui.PostMessage(self._hwnd, win32con.WM_QUIT, 0, 0)
+            except Exception:
+                pass
+
+    def _wndproc(self, hwnd, msg, wparam, lparam):
+        if msg == win32con.WM_POWERBROADCAST:
+            if wparam in (win32con.PBT_APMRESUMEAUTOMATIC,
+                          win32con.PBT_APMRESUMESUSPEND):
+                print("PowerMonitor: System wake detected.")
+                try:
+                    self._on_resume()
+                except Exception as exc:
+                    print(f"PowerMonitor: Error in on_resume callback: {exc}")
+        return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
+
+    def _run(self):
+        try:
+            wc = win32gui.WNDCLASS()
+            wc.lpfnWndProc = self._wndproc
+            wc.lpszClassName = "OmniDictatePowerMonitor"
+            atom = win32gui.RegisterClass(wc)
+            self._hwnd = win32gui.CreateWindow(
+                atom, "PowerMonitor", 0,
+                0, 0, 0, 0,
+                0, 0, 0, None
+            )
+            win32gui.PumpMessages()
+        except Exception as exc:
+            print(f"PowerMonitor: Thread error: {exc}")
 
 
 # --- Worker Class ---
@@ -91,11 +151,13 @@ class DictationWorker(QObject):
         self.audio_check_timer.timeout.connect(self._check_audio_queue)
         self.audio_check_interval = 100 # Adjusted for 50ms chunks
         
-        # New stability counters
+        # Stability state
         self.overflow_count = 0
         self.last_audio_time = time.time()
         self.transcription_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         self.is_transcribing = False
+        self._system_resumed = False  # Set by PowerMonitor on wake; cleared after stream restart
+        self._power_monitor: _PowerMonitor | None = None
 
     # --- Public Slots ---
     @Slot(bool)
@@ -219,27 +281,95 @@ class DictationWorker(QObject):
         try:
             device_info = sd.query_devices(kind='input')
             self.status_updated.emit(f"Using device: {device_info['name']}")
-            self.overflow_count = 0; self.last_audio_time = time.time()
-            self.audio_stream = sd.InputStream(samplerate=SAMPLE_RATE, blocksize=CHUNK_SIZE, device=None, channels=1, dtype='int16', callback=self._audio_callback)
+            self.overflow_count = 0
+            self.last_audio_time = time.time()
+            self._system_resumed = False
+            self.audio_stream = sd.InputStream(
+                samplerate=SAMPLE_RATE, blocksize=CHUNK_SIZE,
+                device=None, channels=1, dtype='int16',
+                callback=self._audio_callback
+            )
             self.audio_stream.start()
             self.status_updated.emit("Listening...")
             self.audio_check_timer.start(self.audio_check_interval)
-        except sd.PortAudioError as pae: error_msg = f"PortAudio Error: {pae}"; print(error_msg); self.error_occurred.emit(error_msg); self.stop_processing()
-        except Exception as e: error_msg = f"Audio stream error: {e}"; print(error_msg); self.error_occurred.emit(error_msg); self.stop_processing()
+        except sd.PortAudioError as pae:
+            error_msg = f"PortAudio Error: {pae}"
+            print(error_msg); self.error_occurred.emit(error_msg); self.stop_processing()
+        except Exception as e:
+            error_msg = f"Audio stream error: {e}"
+            print(error_msg); self.error_occurred.emit(error_msg); self.stop_processing()
+
+        # Start Windows power-event monitor so we know exactly when the system wakes
+        if _WIN32_AVAILABLE:
+            self._power_monitor = _PowerMonitor(on_resume=self._on_system_resume)
+            self._power_monitor.start()
+            print("PowerMonitor: Started.")
+        else:
+            print("PowerMonitor: win32gui not available; sleep/wake detection disabled.")
+
+    def _on_system_resume(self):
+        """
+        Called by _PowerMonitor the instant Windows fires PBT_APMRESUMEAUTOMATIC.
+        We set a flag here (thread-safe write) and let _check_audio_queue (which
+        runs on the Qt thread) handle the actual stream restart after a short delay
+        so that audio drivers have time to reinitialize.
+        """
+        self._system_resumed = True
 
     def _restart_stream(self):
-        """Silently restarts the audio stream to recover from sleep or system changes."""
-        if not self._is_running: return
-        print("Stability: Restarting audio stream...")
+        """
+        Tears down the existing PortAudio stream, forces PortAudio to re-enumerate
+        audio devices (critical after sleep/wake), then opens a fresh stream.
+        """
+        if not self._is_running:
+            return
+
+        print("Stability: Restarting audio stream and reinitializing PortAudio...")
+        self.status_updated.emit("Recovering audio...")
+
+        # 1. Close the broken stream cleanly (it may already be dead, so swallow errors)
+        if self.audio_stream:
+            try:
+                self.audio_stream.stop()
+                self.audio_stream.close()
+            except Exception as close_err:
+                print(f"Stability: Error closing old stream (expected after sleep): {close_err}")
+            finally:
+                self.audio_stream = None
+
+        # 2. Reinitialize PortAudio at the library level so stale device handles are
+        #    flushed. This is the key step missing from the previous implementation.
         try:
-            if self.audio_stream:
-                self.audio_stream.stop(); self.audio_stream.close()
-            self.overflow_count = 0; self.last_audio_time = time.time()
-            self.audio_stream = sd.InputStream(samplerate=SAMPLE_RATE, blocksize=CHUNK_SIZE, device=None, channels=1, dtype='int16', callback=self._audio_callback)
+            sd._terminate()
+            sd._initialize()
+            print("Stability: PortAudio reinitialized.")
+        except Exception as pa_err:
+            print(f"Stability: PortAudio reinit error: {pa_err}")
+
+        # 3. Reset counters and clear the queue (old callbacks may have queued garbage)
+        self.overflow_count = 0
+        self.last_audio_time = time.time()
+        self._system_resumed = False
+        while not self.audio_queue.empty():
+            try:
+                self.audio_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        # 4. Open the new stream
+        try:
+            device_info = sd.query_devices(kind='input')
+            print(f"Stability: Reopening stream on '{device_info['name']}'...")
+            self.audio_stream = sd.InputStream(
+                samplerate=SAMPLE_RATE, blocksize=CHUNK_SIZE,
+                device=None, channels=1, dtype='int16',
+                callback=self._audio_callback
+            )
             self.audio_stream.start()
             print("Stability: Stream restarted successfully.")
+            self.status_updated.emit("Listening...")
         except Exception as e:
-            print(f"Stability: Error restarting stream: {e}")
+            print(f"Stability: Error opening new stream: {e}")
             self.error_occurred.emit(f"Failed to recover audio stream: {e}")
             self.stop_processing()
 
@@ -260,6 +390,11 @@ class DictationWorker(QObject):
             self.typing_thread_instance.join(timeout=1.5)
             if self.typing_thread_instance.is_alive(): print("Warning: Typing thread did not stop gracefully.")
         self.typing_thread_instance = None
+
+        # Stop the power monitor thread
+        if self._power_monitor:
+            self._power_monitor.stop()
+            self._power_monitor = None
 
         # Clear queues again
         print("Clearing queues...")
@@ -293,6 +428,20 @@ class DictationWorker(QObject):
     def _check_audio_queue(self):
         if not self._is_running: return
         try:
+            # --- Stream health check ---
+            # Priority 1: System woke from sleep – always restart after a brief driver-settle delay.
+            if self._system_resumed:
+                print("Stability: System resumed flag detected; waiting 3s for audio drivers to settle...")
+                self._system_resumed = False  # Clear immediately so we don't re-enter
+                QTimer.singleShot(3000, self._restart_stream)
+                return
+
+            # Priority 2: Stream is no longer active (hardware handle severed).
+            if self.audio_stream and not self.audio_stream.active:
+                print("Stability: Stream is no longer active; restarting...")
+                self._restart_stream()
+                return
+
             processed_chunk_count = 0; max_chunks_per_cycle = 5
             while not self.audio_queue.empty() and processed_chunk_count < max_chunks_per_cycle:
                 raw_audio_chunk = self.audio_queue.get_nowait(); processed_chunk_count += 1
@@ -319,10 +468,9 @@ class DictationWorker(QObject):
                                 self.status_updated.emit("Transcribing...")
                                 self.recording = False; self.vad_active = False; self._process_audio_buffer()
 
-            # Stability check: Restart if audio callback seems dead or heavily overflowing
-            idle_time = time.time() - self.last_audio_time
-            if (idle_time > 2.0 or self.overflow_count > 50) and not self.is_transcribing:
-                print(f"Stability Warning: Audio stream appears stalled (idle: {idle_time:.1f}s, overflows: {self.overflow_count}). Restarting...")
+            # Overflow guard: too many overflows in a row indicate a degraded stream
+            if self.overflow_count > 50 and not self.is_transcribing:
+                print(f"Stability: Excessive overflows ({self.overflow_count}); restarting stream.")
                 self._restart_stream()
         except queue.Empty: pass
         except Exception as e: error_msg = f"Audio check loop error: {e}"; print(error_msg); self.error_occurred.emit(error_msg)
