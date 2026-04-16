@@ -728,6 +728,7 @@ class OmniDictateApp(QMainWindow):
         self.dictation_worker.error_occurred.connect(self.show_error)
         self.dictation_worker.warning_occurred.connect(self.show_warning)
         self.dictation_worker.audio_level.connect(self.update_visualizer)
+        self.dictation_worker.auto_restart_requested.connect(self._handle_auto_restart)
         # Connect control signals
         self.ptt_signal.connect(self.dictation_worker.set_ptt_state)
         self.settings_updated_signal.connect(self.dictation_worker.update_settings)
@@ -770,6 +771,39 @@ class OmniDictateApp(QMainWindow):
         self.update_vad_button_style()
         self._is_stopping = False
         print("Dictation stopped. Worker and model remain in memory.")
+
+    @Slot()
+    def _handle_auto_restart(self):
+        """
+        Called when the worker detects a stream failure (typically after sleep/wake).
+        Performs a full Stop → delayed Start cycle to allow Windows audio drivers to
+        fully reinitialize before the new stream is opened.
+
+        The 5-second delay is intentional: Windows AudioSrv needs time to re-apply
+        microphone volume/boost settings to any new WASAPI session after wake.
+        A shorter delay causes the stream to open during a zero-gain window.
+        """
+        if not self.is_dictation_running:
+            return  # Already stopped; nothing to do
+
+        print("GUI: Auto-restart triggered. Stopping dictation...")
+        self.update_status("Recovering audio after sleep...")
+        self.stop_dictation()
+
+        # 5-second delay before restart to let Windows audio drivers settle.
+        # This is the critical fix: AudioSrv needs ~3-5s after wake to fully
+        # re-apply microphone gain/boost to new WASAPI sessions.
+        DRIVER_SETTLE_MS = 5000
+        print(f"GUI: Will restart dictation in {DRIVER_SETTLE_MS // 1000}s...")
+        QTimer.singleShot(DRIVER_SETTLE_MS, self._auto_restart_start)
+
+    @Slot()
+    def _auto_restart_start(self):
+        """Deferred callback that performs the Start half of auto-restart."""
+        if self.is_dictation_running:
+            return  # User manually restarted in the meantime
+        print("GUI: Auto-restart: starting dictation now.")
+        self.start_dictation()
 
     def _destroy_worker(self):
         """Fully destroy the persistent worker and thread (for app close)."""

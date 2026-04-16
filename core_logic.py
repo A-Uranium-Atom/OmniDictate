@@ -109,6 +109,7 @@ class DictationWorker(QObject):
     error_occurred = Signal(str)
     warning_occurred = Signal(str)
     audio_level = Signal(float)
+    auto_restart_requested = Signal()
 
     def __init__(self, gui_wid, model_size="large-v3", language="en", vad_enabled=True,
                  silence_threshold=500, silence_duration=0.5, char_delay=0.02,
@@ -153,10 +154,8 @@ class DictationWorker(QObject):
         
         # Stability state
         self.overflow_count = 0
-        self.last_audio_time = time.time()
         self.transcription_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         self.is_transcribing = False
-        self._system_resumed = False  # Set by PowerMonitor on wake; cleared after stream restart
         self._power_monitor: _PowerMonitor | None = None
 
     # --- Public Slots ---
@@ -282,8 +281,6 @@ class DictationWorker(QObject):
             device_info = sd.query_devices(kind='input')
             self.status_updated.emit(f"Using device: {device_info['name']}")
             self.overflow_count = 0
-            self.last_audio_time = time.time()
-            self._system_resumed = False
             self.audio_stream = sd.InputStream(
                 samplerate=SAMPLE_RATE, blocksize=CHUNK_SIZE,
                 device=None, channels=1, dtype='int16',
@@ -310,68 +307,10 @@ class DictationWorker(QObject):
     def _on_system_resume(self):
         """
         Called by _PowerMonitor the instant Windows fires PBT_APMRESUMEAUTOMATIC.
-        We set a flag here (thread-safe write) and let _check_audio_queue (which
-        runs on the Qt thread) handle the actual stream restart after a short delay
-        so that audio drivers have time to reinitialize.
+        Signals the GUI to perform a full stop → start cycle after a driver-settle delay.
         """
-        self._system_resumed = True
-
-    def _restart_stream(self):
-        """
-        Tears down the existing PortAudio stream, forces PortAudio to re-enumerate
-        audio devices (critical after sleep/wake), then opens a fresh stream.
-        """
-        if not self._is_running:
-            return
-
-        print("Stability: Restarting audio stream and reinitializing PortAudio...")
-        self.status_updated.emit("Recovering audio...")
-
-        # 1. Close the broken stream cleanly (it may already be dead, so swallow errors)
-        if self.audio_stream:
-            try:
-                self.audio_stream.stop()
-                self.audio_stream.close()
-            except Exception as close_err:
-                print(f"Stability: Error closing old stream (expected after sleep): {close_err}")
-            finally:
-                self.audio_stream = None
-
-        # 2. Reinitialize PortAudio at the library level so stale device handles are
-        #    flushed. This is the key step missing from the previous implementation.
-        try:
-            sd._terminate()
-            sd._initialize()
-            print("Stability: PortAudio reinitialized.")
-        except Exception as pa_err:
-            print(f"Stability: PortAudio reinit error: {pa_err}")
-
-        # 3. Reset counters and clear the queue (old callbacks may have queued garbage)
-        self.overflow_count = 0
-        self.last_audio_time = time.time()
-        self._system_resumed = False
-        while not self.audio_queue.empty():
-            try:
-                self.audio_queue.get_nowait()
-            except queue.Empty:
-                break
-
-        # 4. Open the new stream
-        try:
-            device_info = sd.query_devices(kind='input')
-            print(f"Stability: Reopening stream on '{device_info['name']}'...")
-            self.audio_stream = sd.InputStream(
-                samplerate=SAMPLE_RATE, blocksize=CHUNK_SIZE,
-                device=None, channels=1, dtype='int16',
-                callback=self._audio_callback
-            )
-            self.audio_stream.start()
-            print("Stability: Stream restarted successfully.")
-            self.status_updated.emit("Listening...")
-        except Exception as e:
-            print(f"Stability: Error opening new stream: {e}")
-            self.error_occurred.emit(f"Failed to recover audio stream: {e}")
-            self.stop_processing()
+        print("PowerMonitor: System wake detected. Requesting auto-restart...")
+        self.auto_restart_requested.emit()
 
     @Slot()
     def stop_processing(self):
@@ -412,7 +351,6 @@ class DictationWorker(QObject):
 
     # --- Internal Methods ---
     def _audio_callback(self, indata, frames, time_info, status):
-        self.last_audio_time = time.time()
         if status:
             if status.input_overflow:
                 self.overflow_count += 1
@@ -428,18 +366,10 @@ class DictationWorker(QObject):
     def _check_audio_queue(self):
         if not self._is_running: return
         try:
-            # --- Stream health check ---
-            # Priority 1: System woke from sleep – always restart after a brief driver-settle delay.
-            if self._system_resumed:
-                print("Stability: System resumed flag detected; waiting 3s for audio drivers to settle...")
-                self._system_resumed = False  # Clear immediately so we don't re-enter
-                QTimer.singleShot(3000, self._restart_stream)
-                return
-
-            # Priority 2: Stream is no longer active (hardware handle severed).
+            # Priority: Stream is no longer active (hardware handle severed).
             if self.audio_stream and not self.audio_stream.active:
-                print("Stability: Stream is no longer active; restarting...")
-                self._restart_stream()
+                print("Stability: Stream is no longer active; requesting auto-restart...")
+                self.auto_restart_requested.emit()
                 return
 
             processed_chunk_count = 0; max_chunks_per_cycle = 5
@@ -470,8 +400,8 @@ class DictationWorker(QObject):
 
             # Overflow guard: too many overflows in a row indicate a degraded stream
             if self.overflow_count > 50 and not self.is_transcribing:
-                print(f"Stability: Excessive overflows ({self.overflow_count}); restarting stream.")
-                self._restart_stream()
+                print(f"Stability: Excessive overflows ({self.overflow_count}); requesting auto-restart.")
+                self.auto_restart_requested.emit()
         except queue.Empty: pass
         except Exception as e: error_msg = f"Audio check loop error: {e}"; print(error_msg); self.error_occurred.emit(error_msg)
 
