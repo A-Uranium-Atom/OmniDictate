@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.1] - 2026-04-20
+
+### Added
+- **AI Agent Guidelines**: Expanded `AGENTS.md` with technical safeguards for self-injection prevention, power management (sleep/wake recovery), memory-safe audio buffering, and halluncination filtering.
+
 ## [2.2.0] - 2026-04-19
 
 ### Added
