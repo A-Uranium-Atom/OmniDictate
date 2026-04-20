@@ -52,9 +52,9 @@ class HotkeyWorker(QObject):
         if isinstance(key, keyboard.Key): return f'keyboard.Key.{key.name}'
         elif isinstance(key, keyboard.KeyCode):
             if key.char:
-                if hasattr(key, 'vk') and ( (48 <= key.vk <= 57) or (65 <= key.vk <= 90) ): return f"keyboard.KeyCode.from_char('{key.char}')"
+                if hasattr(key, 'vk') and key.vk is not None and ( (48 <= key.vk <= 57) or (65 <= key.vk <= 90) ): return f"keyboard.KeyCode.from_char('{key.char}')"
                 else: return f"keyboard.KeyCode.from_char('{key.char}')"
-            elif hasattr(key, 'vk'): return f'keyboard.KeyCode(vk={key.vk})'
+            elif hasattr(key, 'vk') and key.vk is not None: return f'keyboard.KeyCode(vk={key.vk})'
         return str(key)
 
     def _on_press(self, key):

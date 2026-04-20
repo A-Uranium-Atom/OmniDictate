@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.0] - 2026-04-19
+
+### Added
+- **Automated Test Suite**: Implemented a comprehensive test framework using `pytest`, `pytest-qt`, and `pytest-mock`.
+  - Unit and integration tests for `DictationWorker` (audio processing, RMS gating, hallucination filtering).
+  - Headless GUI state and signal tests for `OmniDictateApp`.
+  - Mocked OS-level listeners and key string parsers for `HotkeyWorker`.
+- **Manual Testing Protocol**: Authored `docs/manual_testing_protocol.md` for high-risk OS interactions (Admin elevation, hardware latency).
+- **Environment**: Added `pytest.ini` for root configuration and `requirements-dev.txt` for testing dependencies.
+
+### Fixed
+- **Hotkey Listener**: Resolved a `TypeError` in `hotkey_listener.py` where keys with `None` virtual keycodes (`vk`) would cause a crash during string conversion.
+- **Signal Handling**: Fixed a reliability issue in PySide6 signal mocking by implementing proper event loop pumping in tests.
+
 ## [2.1.0] - 2026-04-13
 
 ### Added
