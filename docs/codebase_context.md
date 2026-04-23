@@ -43,7 +43,7 @@ This is the heavy hitter of the application, managing raw microphone data, matri
 - **Typing & Insertion Thread (`_typing_loop`)**:
   - A detached background thread consuming textual outputs via `text_queue`.
   - Polling active window via `ctypes.windll.user32.GetForegroundWindow()` to prevent recursive inserting into the OmniDictate app itself.
-  - **Clipboard Injection**: Backs up the user's active clipboard via `win32clipboard`, places the new text, simulates a `Ctrl+V` keystroke via `pynput`, and immediately restores all prior rich-text/file formats to the clipboard context. If the clipboard has complex dragged files (`CF_HDROP`), it bails out to protect data and falls back to character-by-character keypress emulation.
+  - **Clipboard Injection**: Backs up the user's active clipboard via `win32clipboard`, places the new text, simulates a `Ctrl+V` keystroke via `pynput`, and restores all prior rich-text/file formats after a configurable `paste_delay` (default 300ms). This delay prevents race conditions in asynchronous apps (like Google Gemini). If the clipboard has complex dragged files (`CF_HDROP`), it bails out to protect data and falls back to character-by-character keypress emulation.
 - **Power Management (`_PowerMonitor`)**: A daemon thread hooking into Windows `win32gui` messages to explicitly track `PBT_APMRESUMEAUTOMATIC`. It forces an automated tear-down and delayed reboot of the audio driver queue after a system wakes from sleep to prevent dead PortAudio handles.
 
 ---

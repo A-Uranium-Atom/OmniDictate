@@ -42,6 +42,7 @@ DEFAULT_PTT_KEY_STR = "keyboard.Key.shift_r"
 DEFAULT_RMS_THRESHOLD = 0.01
 DEFAULT_HALLUCINATION_FILTER = "Medium"  # Recommended
 DEFAULT_INSERTION_METHOD = "Paste" # Recommended
+DEFAULT_PASTE_DELAY = 0.3
 
 DEFAULT_FILTER_WORDS = [
     "thank you",
@@ -131,6 +132,7 @@ class OmniDictateApp(QMainWindow):
         self.rms_spinbox.valueChanged.connect(self.save_settings)
         self.hallucination_combo.currentTextChanged.connect(self.save_settings)
         self.insertion_combo.currentTextChanged.connect(self.save_settings)
+        self.paste_delay_spinbox.valueChanged.connect(self.save_settings)
 
 
         self.start_hotkey_listener()
@@ -440,7 +442,14 @@ class OmniDictateApp(QMainWindow):
         self.insertion_combo.addItems(["Paste", "Typing"])
         self.insertion_combo.setCurrentText(self.loaded_settings.get("insertion_method", DEFAULT_INSERTION_METHOD))
         self.insertion_combo.setToolTip("Paste: Instant text input using clipboard (recommended for long text). Typing: Emulate keystrokes.")
-        grid.addWidget(self.insertion_combo, row, 1); row += 1
+        grid.addWidget(self.insertion_combo, row, 1)
+
+        grid.addWidget(QLabel("Paste Delay (s):", objectName="settingLabel", alignment=Qt.AlignRight | Qt.AlignVCenter), row, 2)
+        self.paste_delay_spinbox = QDoubleSpinBox()
+        self.paste_delay_spinbox.setRange(0.1, 1.0); self.paste_delay_spinbox.setSingleStep(0.05); self.paste_delay_spinbox.setDecimals(2)
+        self.paste_delay_spinbox.setValue(self.loaded_settings.get("paste_delay", DEFAULT_PASTE_DELAY))
+        self.paste_delay_spinbox.setToolTip("Time to wait after pasting before restoring the clipboard. Increase if apps like Gemini paste old text.")
+        grid.addWidget(self.paste_delay_spinbox, row, 3); row += 1
 
         grid.addWidget(QLabel("Filter Words:", objectName="settingLabel", alignment=Qt.AlignLeft | Qt.AlignVCenter), row, 0, 1, 4); row += 1
         self.filter_list = QListWidget()
@@ -480,6 +489,7 @@ class OmniDictateApp(QMainWindow):
             "rms_threshold": self.settings.value("rms_threshold", DEFAULT_RMS_THRESHOLD, type=float),
             "hallucination_filter": self.settings.value("hallucination_filter", DEFAULT_HALLUCINATION_FILTER),
             "insertion_method": self.settings.value("insertion_method", DEFAULT_INSERTION_METHOD),
+            "paste_delay": self.settings.value("paste_delay", DEFAULT_PASTE_DELAY, type=float),
             "filter_words": self.settings.value("filter_words", DEFAULT_FILTER_WORDS)
         }
 
@@ -511,6 +521,7 @@ class OmniDictateApp(QMainWindow):
         self.settings.setValue("rms_threshold", self.rms_spinbox.value())
         self.settings.setValue("hallucination_filter", self.hallucination_combo.currentText())
         self.settings.setValue("insertion_method", self.insertion_combo.currentText())
+        self.settings.setValue("paste_delay", self.paste_delay_spinbox.value())
         
 
         filter_words = [self.filter_list.item(i).text() for i in range(self.filter_list.count())]
@@ -530,7 +541,8 @@ class OmniDictateApp(QMainWindow):
                 "filter_words": self.loaded_settings.get("filter_words", []),
                 "rms_threshold": self.loaded_settings["rms_threshold"],
                 "hallucination_filter": self.loaded_settings["hallucination_filter"],
-                "insertion_method": self.loaded_settings["insertion_method"]
+                "insertion_method": self.loaded_settings["insertion_method"],
+                "paste_delay": self.loaded_settings["paste_delay"]
             })
 
     @Slot()
@@ -544,6 +556,7 @@ class OmniDictateApp(QMainWindow):
         self.rms_spinbox.setValue(DEFAULT_RMS_THRESHOLD)
         self.hallucination_combo.setCurrentText(DEFAULT_HALLUCINATION_FILTER)
         self.insertion_combo.setCurrentText(DEFAULT_INSERTION_METHOD)
+        self.paste_delay_spinbox.setValue(DEFAULT_PASTE_DELAY)
         self.settings.setValue("ptt_key_str", DEFAULT_PTT_KEY_STR)
         
         self.ptt_key_display_label.setText(self.format_key_name(DEFAULT_PTT_KEY_STR))
@@ -719,7 +732,8 @@ class OmniDictateApp(QMainWindow):
             char_delay=self.loaded_settings['char_delay'], filter_words=self.loaded_settings['filter_words'],
             rms_threshold=self.loaded_settings['rms_threshold'],
             hallucination_filter=self.loaded_settings['hallucination_filter'],
-            insertion_method=self.loaded_settings['insertion_method']
+            insertion_method=self.loaded_settings['insertion_method'],
+            paste_delay=self.loaded_settings['paste_delay']
         )
         self.dictation_worker.moveToThread(self.dictation_thread)
         # Connect worker signals

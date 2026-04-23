@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.2] - 2026-04-22
+
+### Added
+- **Configurable Paste Delay**: Introduced a new `Paste Recovery Delay (ms)` setting in the Advanced menu. This allows users to fine-tune the delay before restoring the original clipboard content, resolving race conditions in asynchronous applications like Google Gemini.
+
+### Changed
+- **Clipboard Injection**: Refactored `DictationWorker` to utilize the user-defined `paste_delay` (defaulting to 300ms) for improved robustness across varied text input environments.
+
 ## [2.2.1] - 2026-04-20
 
 ### Added

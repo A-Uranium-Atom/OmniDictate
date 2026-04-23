@@ -114,7 +114,7 @@ class DictationWorker(QObject):
     def __init__(self, gui_wid, model_size="large-v3", language="en", vad_enabled=True,
                  silence_threshold=500, silence_duration=0.5, char_delay=0.02,
                  filter_words=None, rms_threshold=0.01, hallucination_filter="Medium",
-                 insertion_method="Paste", parent=None):
+                 insertion_method="Paste", paste_delay=0.3, parent=None):
         super().__init__(parent)
         self.gui_wid = gui_wid
         self.model_size = model_size
@@ -131,6 +131,7 @@ class DictationWorker(QObject):
         self.rms_threshold = rms_threshold
         self.hallucination_filter = hallucination_filter
         self.insertion_method = insertion_method
+        self.paste_delay = paste_delay
         self._last_transcript = ""
         self._repeat_count = 0
         
@@ -197,6 +198,8 @@ class DictationWorker(QObject):
             self.hallucination_filter = settings["hallucination_filter"]
         if "insertion_method" in settings:
             self.insertion_method = settings["insertion_method"]
+        if "paste_delay" in settings:
+            self.paste_delay = settings["paste_delay"]
         new_model = settings.get("model_size")
         if new_model and new_model != self.model_size:
             print(f"Model size changed: {self.model_size} -> {new_model}. Reloading model...")
@@ -554,7 +557,7 @@ class DictationWorker(QObject):
         keyboard_controller.press('v')
         keyboard_controller.release('v')
         keyboard_controller.release(keyboard.Key.ctrl)
-        time.sleep(0.1) # Let the app process the paste
+        time.sleep(self.paste_delay) # Let the app process the paste
 
         # 4. Restore backup
         if clipboard_backup:
