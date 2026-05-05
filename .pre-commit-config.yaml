@@ -1,0 +1,27 @@
+repos:
+  - repo: local
+    hooks:
+      # Run ruff linter — fails the commit if any lint errors are present.
+      - id: ruff-check
+        name: Ruff lint
+        language: system
+        entry: uv run ruff check .
+        types: [python]
+        pass_filenames: false
+
+      # Run ruff formatter in check-only mode — fails if formatting is needed.
+      - id: ruff-format
+        name: Ruff format check
+        language: system
+        entry: uv run ruff format --check .
+        types: [python]
+        pass_filenames: false
+
+      # Run the full pytest suite — fails the commit if any tests regress.
+      # Use `git commit --no-verify` in genuine emergencies only.
+      - id: pytest
+        name: pytest suite
+        language: system
+        entry: uv run pytest
+        pass_filenames: false
+        always_run: true

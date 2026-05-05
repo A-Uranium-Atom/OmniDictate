@@ -1,21 +1,35 @@
+# Python bytecode
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+
+# Environment
 .env
-venv/
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.env
-venv/
+.venv/
+
+# uv lock file — committed to the repo for reproducible installs
+# (uv.lock itself is NOT listed here; only the tool cache is ignored)
+
+# Ruff cache
+.ruff_cache/
+
+# macOS metadata
 .DS_Store
+
+# Build & distribution artefacts
 build/
 dist/
 InstallerOutput/
 release/
 icon_backup/
+
+# Compressed artefacts
 *.7z.*
 *.7z
+
+# Log files
 *.log
+
+# pytest cache
+.pytest_cache/

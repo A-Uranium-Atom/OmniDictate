@@ -1,0 +1,99 @@
+[project]
+name = "omni-dictate"
+version = "2.2.2"
+requires-python = ">=3.11"
+description = "A Windows speech-to-text application powered by faster-whisper."
+license = { text = "MIT" }
+
+# ── Runtime dependencies (migrated from requirements.txt) ──────────────────
+dependencies = [
+    "numpy",
+    "torch",            # resolved via [tool.uv.sources] to the CUDA wheel index
+    "psutil",
+    "sounddevice",
+    "faster-whisper",
+    "pynput",
+    "ctranslate2>=3.17",
+    "transformers",
+    "sentencepiece",
+    "pywinauto",
+    "PySide6",
+    "pywin32",
+]
+
+# ── Dev / test dependency group (migrated from requirements-dev.txt) ────────
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-qt",
+    "pytest-mock",
+    "ruff",
+    "pre-commit",
+]
+
+# ── CUDA wheel source override — replaces the bare --extra-index-url hack ──
+# "explicit = true" means ONLY torch is fetched from this index; all other
+# packages still resolve from PyPI, preventing accidental CUDA-only packages.
+[tool.uv.sources]
+torch = { index = "pytorch-cuda" }
+
+[[tool.uv.index]]
+name = "pytorch-cuda"
+url  = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+# ── Ruff: combined linting + formatting ─────────────────────────────────────
+[tool.ruff]
+line-length    = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade (keeps syntax modern)
+    "ANN", # flake8-annotations (enforces type hints)
+    "D",   # pydocstyle (Google-style docstring enforcement)
+    "N",   # pep8-naming conventions
+    "C90", # mccabe complexity gate
+]
+ignore = [
+    "D203",   # one-blank-line-before-class — conflicts with D211 (Google style)
+    "D213",   # multi-line-summary-second-line — conflicts with D212 (Google style)
+    "ANN101", # missing type annotation for `self` — not required in modern Python
+    "ANN102", # missing type annotation for `cls`  — not required in modern Python
+    "ANN401", # allow typing.Any for gradual typing in complex/dynamic areas
+    "E501",   # line too long — ruff format handles what it safely can; hard
+              # limits like long URLs and type signatures are left untouched
+    "D100",   # missing docstring in public module — too noisy for simple files
+    "D104",   # missing docstring in public package (__init__.py)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Completely suppress docstring enforcement for test helpers and one-off scripts
+"tests/**/*.py"  = ["D"]
+"compress_video.py" = ["D"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.mccabe]
+# Raised from the default of 10 to 15 to accommodate Qt UI setup functions
+# and audio-processing logic that are long by necessity, not by poor design.
+max-complexity = 15
+
+[tool.ruff.lint.isort]
+known-first-party = ["core_logic", "hotkey_listener", "main_gui"]
+
+[tool.ruff.format]
+quote-style  = "double"
+indent-style = "space"
+line-ending  = "auto"
+
+# ── pytest configuration (migrated from pytest.ini) ─────────────────────────
+[tool.pytest.ini_options]
+testpaths  = ["tests"]
+pythonpath = ["."]
