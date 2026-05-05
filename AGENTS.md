@@ -23,3 +23,13 @@
 ## 3. State Management
 * Avoid reloading the ML models globally unless hardware parameters (like `model_size`) are explicitly changed by the user.
 * Route configuration state changes to workers dynamically via `settings_updated_signal(dict)`.
+
+## 4. Documentation & Version Control
+* **Agent-to-Agent Communication:** When writing documentation, assume the reader could be another AI agent. Use highly structured, consistent formatting. Provide clear technical reasoning (the "why"), explicit file paths, and detailed context so the next agent or human can seamlessly pick up where you left off without ambiguity.
+* **Changelog & Versioning:** After completing a task, decide if it warrants a version bump. If so:
+  1. Update `CHANGELOG.md` with specific changes, what was fixed/added, and the technical reasoning.
+  2. Synchronize the new version string in `pyproject.toml` (`version = "..."`).
+  3. Synchronize the new version string in `OmniDictate_Setup.iss` (`AppVersion` and `OutputBaseFilename`).
+* **Dependency Lockfile:** If you add or modify dependencies in `pyproject.toml`, you MUST run `uv lock` to regenerate the `uv.lock` file.
+* **Codebase Context:** If a feature or architectural pattern changes, update `docs/codebase_context.md`. Treat this file as the definitive Source of Truth. Seamlessly integrate changes with consistent detail, ensuring future agents can easily map the project's data flow.
+* **README:** For major user-facing changes or new features, update `README.md`. Follow its current visual style and keep installation/usage instructions accurate.
