@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.3] - 2026-05-04
+
+### Added
+- **`pyproject.toml`**: Introduced as the single canonical source of truth for all
+  dependency management, replacing the `requirements.txt` / `requirements-dev.txt` workflow.
+  Managed via `uv` (≥0.11.8). Closes audit finding Section 1 (Package Manager).
+- **`uv.lock`**: Deterministic lock file pinning all 91 transitive dependencies for
+  fully reproducible installs across machines and CI environments.
+- **Ruff linting & formatting**: Configured via `[tool.ruff]` in `pyproject.toml`.
+  Rule set: `E`, `W`, `F`, `I`, `B`, `UP`, `ANN`, `D` (Google convention), `N`, `C90`.
+  Line length: 88. McCabe complexity: 15. Relaxed: `ANN401`, `E501`, `D100`, `D104`.
+- **Pre-commit hook** (`.pre-commit-config.yaml`): Enforces `ruff check`, `ruff format --check`,
+  and `pytest` automatically on every `git commit`. Closes audit finding Section 5 (Pre-Commit).
+- **`archive/`**: Legacy `requirements.txt` and `requirements-dev.txt` moved here for
+  historical reference (e.g. PyInstaller / Inno Setup workflows).
+
+### Changed
+- **`pytest.ini`**: Deleted; settings migrated to `[tool.pytest.ini_options]` in `pyproject.toml`.
+- **`.gitignore`**: De-duplicated and extended with `.venv/`, `.ruff_cache/`, `.pytest_cache/`.
+- **Dev dependencies**: Added `ruff` and `pre-commit` to the `[dependency-groups] dev` group.
+
 ## [2.2.2] - 2026-04-22
 
 ### Added

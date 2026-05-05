@@ -90,3 +90,38 @@ For AI agents assessing the flow of a single input request, the data travels seq
 - **pywin32 (`win32gui`, `win32clipboard`)**: Explicit, low-level OS mapping utilized for system-sleep triggers and robust text injection to external graphical windows.
 - **psutil**: Memory diagnostics utilized to track RAM leaks and garbage collection bottlenecks.
 - **pytest / pytest-qt**: Testing ecosystem providing mocked interfaces for Qt lifecycle assertions without rendering X11 contexts.
+
+---
+
+## Development Environment & Tooling
+
+All environment and tooling configuration lives in `pyproject.toml` (project root). This is
+the single source of truth — do **not** modify `archive/requirements*.txt` for dependency
+changes.
+
+### Package Manager: `uv` (≥ 0.11.8)
+- **Check version**: `uv self version` (`uv version` requires a project context ≥ 0.9.0)
+- **Install all deps** (runtime + dev): `uv sync --group dev`
+- **Add a runtime dep**: `uv add <package>`
+- **Add a dev dep**: `uv add --group dev <package>`
+- **Regenerate lock file**: `uv lock`
+- **PyTorch CUDA 12.4** is sourced from the `pytorch-cuda` index defined in `[tool.uv.sources]`
+  and `[[tool.uv.index]]`. Only `torch` uses this index; all other packages resolve from PyPI.
+
+### Linter & Formatter: Ruff
+- **Lint**: `uv run ruff check .`
+- **Format**: `uv run ruff format .`
+- **Config**: `[tool.ruff]` section in `pyproject.toml`
+  - Line length: 88 | Complexity: 15 | Convention: Google docstrings
+  - Relaxed: `ANN401` (allow `Any`), `E501` (line length), `D100`/`D104` (module docstrings)
+  - Test files and `compress_video.py` have all `D` rules suppressed via `per-file-ignores`
+
+### Pre-Commit Hooks
+- **Install once**: `uv run pre-commit install` (writes to `.git/hooks/pre-commit`)
+- **What runs on every commit**: `ruff check` → `ruff format --check` → `pytest`
+- **Emergency bypass**: `git commit --no-verify` (use sparingly)
+- **Config file**: `.pre-commit-config.yaml` (committed to the repo — do NOT gitignore it)
+
+### Legacy Files
+- `archive/requirements.txt` and `archive/requirements-dev.txt` are kept for PyInstaller /
+  Inno Setup reference only. They are **not** the source of truth for dependencies.
