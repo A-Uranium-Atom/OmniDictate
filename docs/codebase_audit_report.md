@@ -20,6 +20,8 @@ The codebase is functional and architecturally sound in terms of concurrency and
 | `core_logic.py` | 507 | Function length < 50 lines | `_paste_text` is **72 lines** long. | Decompose into `_backup_clipboard`, `_perform_paste`, and `_restore_clipboard`. |
 | `All Files` | - | Full type annotations | Nearly all methods in `main_gui.py`, `core_logic.py`, and `hotkey_listener.py` lack type hints for parameters and return types. | Add explicit type hints for all parameters and return values (e.g., `def start_dictation(self) -> None:`). |
 | `All Files` | - | Google-style docstrings | Most public classes and methods lack docstrings. Documentation is particularly sparse for complex internal logic. | Implement full Google-style docstrings for all public interfaces. |
+| `Project Root` | - | Package Manager | ✅ **FIXED** (v2.2.3): The project is standardized on `uv` and `pyproject.toml`. Legacy `requirements.txt` files are archived. | None. |
+| `All Files` | - | Boolean Naming | Boolean variables do not use true/false question phrasing (e.g., `recording`, `vad_active` in `core_logic.py`, `capture_mode` in `hotkey_listener.py`). | Rename booleans to use `is_`, `has_`, etc. (e.g., `is_recording`, `is_vad_active`, `is_capture_mode`). |
 
 ---
 
@@ -31,6 +33,9 @@ The codebase is functional and architecturally sound in terms of concurrency and
 | `compress_video.py` | 9, 48 | Path management (`pathlib`) | Usage of `os.path.exists` and `os.getsize`. | Replace with `pathlib.Path`. |
 | `core_logic.py` | 259 | Function length < 50 lines | `start_processing` is **51 lines** long. | Extract queue clearing and audio stream initialization into sub-methods. |
 | `core_logic.py` | 106 | Class complexity | `DictationWorker` handles audio capture, VAD logic, model loading, and typing loop orchestration. | Decouple audio capture and VAD into a `StreamProcessor` and model inference into an `InferenceEngine`. |
+| `core_logic.py` / `main_gui.py` | 181, 482 | Structured Data | Use of generic dictionaries for configuration data (`settings: dict`, `self.loaded_settings`) instead of `@dataclass` or `Pydantic` models. | Create a `DictationSettings` dataclass to manage configuration state between the UI and workers. |
+| `core_logic.py` | 114 | Enums and Literals | String literals used for `model_size`, `language`, `hallucination_filter`, and `insertion_method` instead of Enums or Literals. | Convert these options into Python `Enum` classes or use `Literal` typing to enforce valid states. |
+| `core_logic.py` | 521, 49 | Magic Values | Inline use of magic numbers (e.g., `15` for `CF_HDROP`) and large hardcoded dictionaries (punctuation map). | Extract magic values into named constants (e.g., `CF_HDROP = 15`) at the module level. |
 
 ---
 
@@ -56,17 +61,17 @@ The codebase is functional and architecturally sound in terms of concurrency and
 | **Memory Monitoring** | ✅ PASS | Implemented in `core_logic.py`: `_finalize_transcription` (lines 485-491). |
 | **Max Recording Seconds** | ✅ PASS | Implemented in `core_logic.py`: `CHUNK_DURATION` / `MAX_RECORDING_SECONDS` check (lines 397-402). |
 
-## 5. Resolved Violations
-
-The following violations have been successfully addressed:
-
-| Rule Violated | Resolution Details | Date Resolved |
-| :--- | :--- | :--- |
-| **Package Management** (Missing `pyproject.toml`) | Migrated from `requirements.txt` to `uv` + `pyproject.toml`. Pinned all dependencies in `uv.lock`. | 2026-05-04 |
-| **Pre-Commit Automation** | Implemented `pre-commit` framework executing `ruff check`, `ruff format`, and `pytest` automatically. | 2026-05-04 |
-
 ---
+
+## 5. Security & Verification Checks (Global & Python Rules)
+
+| Requirement | Status | Evidence |
+| :--- | :--- | :--- |
+| **No `eval()` or `exec()`** | ✅ PASS | No usage found in the codebase. |
+| **No `os.system` or `shell=True`** | ✅ PASS | No unsafe subprocess calls found. |
+| **No Unsafe Serialization (`pickle`)** | ✅ PASS | No usage of `pickle` or `dill` found. |
+| **Pre-Commit Suite Baseline** | ✅ PASS | `.pre-commit-config.yaml` is configured via `uv` to automatically run `ruff check`, `ruff format`, and `pytest` on every commit. |
 
 ## Conclusion
 
-The OmniDictate codebase is robust but requires a significant "cleanup" phase to align with the modularity and documentation standards defined in the project's own guidelines. With Phase 1 (Environment & Tooling) completed, the priority should be **refactoring `main_gui.py` into multiple files** and **adding comprehensive type hinting** across the entire project. This audit incorporates historical violations noted on 2026-04-20 and reflects the current, further degraded state of modularity (increased file lengths).
+The OmniDictate codebase is robust but requires a significant "cleanup" phase to align with the modularity and documentation standards defined in the project's own guidelines. The priority should be **refactoring `main_gui.py` into multiple files** and **adding comprehensive type hinting** across the entire project. This audit incorporates historical violations noted on 2026-04-20 and reflects the current, further degraded state of modularity (increased file lengths).
