@@ -1,6 +1,6 @@
 [project]
 name = "omni-dictate"
-version = "2.2.2"
+version = "2.3.0"
 requires-python = ">=3.11"
 description = "A Windows speech-to-text application powered by faster-whisper."
 license = { text = "MIT" }
@@ -74,7 +74,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 # Completely suppress docstring enforcement for test helpers and one-off scripts
-"tests/**/*.py"  = ["D"]
+"tests/**/*.py"  = ["D", "ANN"]
+"main_gui.py" = ["N802"]
+"tests/conftest.py" = ["N802"]
 "compress_video.py" = ["D"]
 
 [tool.ruff.lint.pydocstyle]
@@ -86,7 +88,7 @@ convention = "google"
 max-complexity = 15
 
 [tool.ruff.lint.isort]
-known-first-party = ["core_logic", "hotkey_listener", "main_gui"]
+known-first-party = ["config", "core", "hotkey_listener", "main_gui", "ui"]
 
 [tool.ruff.format]
 quote-style  = "double"

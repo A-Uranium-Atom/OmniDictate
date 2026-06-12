@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.3.0] - 2026-06-03
+
+### Changed
+- **Architecture**: Decomposed monolithic `main_gui.py` (960 lines) and
+  `core_logic.py` (614 lines) into a modular package structure:
+  - `config.py` — centralized constants, `StrEnum` types (`ModelSize`,
+    `HallucinationLevel`, `InsertionMethod`), and `DictationSettings` dataclass.
+  - `core/` package — `dictation_worker.py`, `power_monitor.py`, `text_injector.py`.
+  - `ui/` package — `icons.py`, `dictation_page.py`, `settings_page.py`.
+- **Settings propagation**: Replaced untyped `Signal(dict)` with
+  `Signal(object)` emitting a structured `DictationSettings` dataclass,
+  eliminating silent failures from key typos.
+- **Boolean naming**: Renamed `recording` → `is_recording`, `vad_active` →
+  `is_vad_active`, `_ptt_active` → `_is_ptt_active`, `capture_mode` →
+  `is_capture_mode` across all modules and tests.
+- **Test suite**: Split `test_core_logic.py` into 4 purpose-driven files
+  mirroring the new module structure. Added `test_config.py` for enum/dataclass
+  coverage.
+- **Entry point**: Migrated `os.path` to `pathlib` in `main_gui.py`.
+
+### Removed
+- **`core_logic.py`**: Deleted after full migration to `core/` package.
+
 ## [2.2.3] - 2026-05-04
 
 ### Added

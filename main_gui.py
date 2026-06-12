@@ -1,38 +1,38 @@
-# main_gui.py
-
 import sys
 import time
-import os
-import math
+from pathlib import Path
 
-# PySide6 imports
-from PySide6.QtWidgets import (QApplication, QMainWindow, QPushButton, QVBoxLayout,
-                               QWidget, QLabel, QComboBox, QStatusBar, QMessageBox,
-                               QSpinBox, QDoubleSpinBox, QHBoxLayout, QLineEdit,
-                               QListWidget, QListWidgetItem, QGroupBox, QGridLayout,
-                               QCheckBox, QTextEdit, QStackedWidget, QFrame, QProgressBar,
-                               QSizePolicy, QScrollArea, QSpacerItem, QStyle)
-from PySide6.QtCore import Qt, QThread, Slot, Signal, QSettings, QTimer, QSize, QRectF, QPointF
-from PySide6.QtGui import QIcon, QFont, QClipboard, QTextCursor, QColor, QPalette, QPainter, QPen, QBrush, QPainterPath, QPixmap
+from PySide6.QtCore import QSettings, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtGui import (
+    QIcon,
+    QTextCursor,
+)
+from PySide6.QtWidgets import (
+    QApplication,
+    QListWidgetItem,
+    QMainWindow,
+    QMessageBox,
+    QStackedWidget,
+    QStatusBar,
+    QVBoxLayout,
+    QWidget,
+)
 
-# Import workers
 try:
-    from core_logic import DictationWorker
+    from core.dictation_worker import DictationWorker
 except ImportError as e:
-    print(f"Error: Could not import from core_logic.py: {e}")
+    print(f"Error: Could not import DictationWorker: {e}")
     sys.exit(1)
-
 try:
     from hotkey_listener import HotkeyWorker
 except ImportError as e:
     print(f"Error: Could not import from hotkey_listener.py: {e}")
     sys.exit(1)
+from ui import DictationPage, SettingsPage
+from ui.icons import format_key_name
 
-# --- Configuration for Settings ---
 CONFIG_ORG = "OmniCorp"
 CONFIG_APP = "OmniDictate"
-
-# --- Default Settings Constants ---
 DEFAULT_MODEL_SIZE = "large-v3"
 DEFAULT_LANGUAGE = None
 DEFAULT_VAD_ENABLED = True
@@ -40,10 +40,9 @@ DEFAULT_SILENCE_THRESHOLD = 500
 DEFAULT_CHAR_DELAY = 0.02
 DEFAULT_PTT_KEY_STR = "keyboard.Key.shift_r"
 DEFAULT_RMS_THRESHOLD = 0.01
-DEFAULT_HALLUCINATION_FILTER = "Medium"  # Recommended
-DEFAULT_INSERTION_METHOD = "Paste" # Recommended
+DEFAULT_HALLUCINATION_FILTER = "Medium"
+DEFAULT_INSERTION_METHOD = "Paste"
 DEFAULT_PASTE_DELAY = 0.3
-
 DEFAULT_FILTER_WORDS = [
     "thank you",
     "thanks for watching",
@@ -57,18 +56,18 @@ DEFAULT_FILTER_WORDS = [
 ]
 
 
-# --- Main Application Window ---
 class OmniDictateApp(QMainWindow):
+    """Main application window for OmniDictate."""
+
     ptt_signal = Signal(bool)
     settings_updated_signal = Signal(dict)
 
-    def __init__(self):
+    def __init__(self) -> None:
+        """Initialize the main window, load settings, and wire all signals."""
         super().__init__()
-
         self.setWindowTitle("OmniDictate")
         self.resize(800, 600)
         self.setMinimumSize(500, 400)
-        
         self.settings = QSettings(CONFIG_ORG, CONFIG_APP)
         self.dictation_thread = None
         self.dictation_worker = None
@@ -81,715 +80,517 @@ class OmniDictateApp(QMainWindow):
         self.original_button_text = ""
         self._is_stopping = False
         self.last_start_click_time = 0
-
         self.load_settings()
-
-        # --- Main Layout Stack ---
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
         self.main_layout = QVBoxLayout(self.central_widget)
         self.main_layout.setContentsMargins(0, 0, 0, 0)
-        
         self.stack = QStackedWidget()
         self.main_layout.addWidget(self.stack)
+        self.dictation_page = DictationPage(
+            model_display_text=f"Model: {self.loaded_settings.get('model_size', DEFAULT_MODEL_SIZE)}",
+            is_vad_checked=self.loaded_settings.get("vad_enabled", DEFAULT_VAD_ENABLED),
+        )
+        self.settings_page = SettingsPage(loaded_settings=self.loaded_settings)
 
-        # --- Create Pages ---
-        self.page_dictation = QWidget()
-        self.setup_dictation_page()
-        self.stack.addWidget(self.page_dictation)
-
-        self.page_settings = QWidget()
-        self.setup_settings_page()
-        self.stack.addWidget(self.page_settings)
-
-        # --- Status Bar ---
+        self.stack.addWidget(self.dictation_page)
+        self.stack.addWidget(self.settings_page)
         self.statusBar = QStatusBar()
         self.setStatusBar(self.statusBar)
         self.statusBar.showMessage("Ready")
-        self.statusBar.hide() 
-
-        # --- Connect Signals ---
-        self.start_button.clicked.connect(self.start_dictation)
-        self.stop_button.clicked.connect(self.stop_dictation)
-        self.vad_toggle_button.clicked.connect(self.toggle_vad)
-        self.settings_button.clicked.connect(lambda: self.stack.setCurrentWidget(self.page_settings))
-        self.back_button.clicked.connect(lambda: self.stack.setCurrentWidget(self.page_dictation))
-        
-        self.copy_button.clicked.connect(self.copy_transcription)
-        
-        # Settings Connections
-        self.filter_add_button.clicked.connect(self.add_filter_word)
-        self.filter_remove_button.clicked.connect(self.remove_filter_word)
-        self.set_ptt_key_button.clicked.connect(lambda: self.prepare_to_set_key('ptt'))
-        
-        self.restore_defaults_button.clicked.connect(self.restore_default_settings)
-
-        # Auto-save connections
-        self.model_combo.currentTextChanged.connect(self.save_settings)
-        self.language_combo.currentTextChanged.connect(self.save_settings)
-        self.silence_spinbox.valueChanged.connect(self.save_settings)
-        self.delay_spinbox.valueChanged.connect(self.save_settings)
-        self.rms_spinbox.valueChanged.connect(self.save_settings)
-        self.hallucination_combo.currentTextChanged.connect(self.save_settings)
-        self.insertion_combo.currentTextChanged.connect(self.save_settings)
-        self.paste_delay_spinbox.valueChanged.connect(self.save_settings)
-
-
+        self.statusBar.hide()
+        self.dictation_page.start_button.clicked.connect(self.start_dictation)
+        self.dictation_page.stop_button.clicked.connect(self.stop_dictation)
+        self.dictation_page.vad_toggle_button.clicked.connect(self.toggle_vad)
+        self.dictation_page.settings_button.clicked.connect(
+            lambda: self.stack.setCurrentWidget(self.settings_page)
+        )
+        self.settings_page.back_button.clicked.connect(
+            lambda: self.stack.setCurrentWidget(self.dictation_page)
+        )
+        self.dictation_page.copy_button.clicked.connect(self.copy_transcription)
+        self.settings_page.filter_add_button.clicked.connect(self.add_filter_word)
+        self.settings_page.filter_remove_button.clicked.connect(self.remove_filter_word)
+        self.settings_page.set_ptt_key_button.clicked.connect(
+            lambda: self.prepare_to_set_key("ptt")
+        )
+        self.settings_page.restore_defaults_button.clicked.connect(
+            self.restore_default_settings
+        )
+        self.settings_page.model_combo.currentTextChanged.connect(self.save_settings)
+        self.settings_page.language_combo.currentTextChanged.connect(self.save_settings)
+        self.settings_page.silence_spinbox.valueChanged.connect(self.save_settings)
+        self.settings_page.delay_spinbox.valueChanged.connect(self.save_settings)
+        self.settings_page.rms_spinbox.valueChanged.connect(self.save_settings)
+        self.settings_page.hallucination_combo.currentTextChanged.connect(
+            self.save_settings
+        )
+        self.settings_page.insertion_combo.currentTextChanged.connect(
+            self.save_settings
+        )
+        self.settings_page.paste_delay_spinbox.valueChanged.connect(self.save_settings)
         self.start_hotkey_listener()
-        self.update_vad_button_style() # Initialize button state
+        self.update_vad_button_style()
         print("GUI Initialized.")
 
-    def create_gear_icon(self):
-        """Draws a vector gear icon to ensure visibility."""
-        size = 64
-        pixmap = QPixmap(size, size)
-        pixmap.fill(Qt.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.Antialiasing)
-        
-        # Colors
-        color = QColor("#ffffff")
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(color))
-        
-        center = QPointF(size/2, size/2)
-        outer_radius = size * 0.45
-        inner_radius = size * 0.25
-        teeth = 8
-        tooth_depth = size * 0.1
-        
-        path = QPainterPath()
-        path.addEllipse(center, inner_radius, inner_radius)
-        path.addEllipse(center, outer_radius, outer_radius) # Ring
-        
-        # Draw teeth
-        for i in range(teeth):
-            angle = 2 * math.pi * i / teeth
-            pass
-            
-        # Let's draw a proper gear shape
-        gear_path = QPainterPath()
-        gear_path.setFillRule(Qt.WindingFill)
-        
-        r_out = size * 0.45
-        r_in = size * 0.35
-        r_hole = size * 0.15
-        
-        points = []
-        for i in range(teeth * 2):
-            angle = 2 * math.pi * i / (teeth * 2)
-            r = r_out if i % 2 == 0 else r_in
-            x = center.x() + r * math.cos(angle)
-            y = center.y() + r * math.sin(angle)
-            if i == 0: gear_path.moveTo(x, y)
-            else: gear_path.lineTo(x, y)
-        gear_path.closeSubpath()
-        
-        # Subtract hole
-        hole_path = QPainterPath()
-        hole_path.addEllipse(center, r_hole, r_hole)
-        final_path = gear_path.subtracted(hole_path)
-        
-        painter.drawPath(final_path)
-        painter.end()
-        return QIcon(pixmap)
-
-    def format_key_name(self, key_str):
-        """Converts raw pynput key strings to user-friendly names."""
-        if not key_str: return "" 
-        
-        key_map = {
-            "keyboard.Key.shift_r": "Right Shift",
-            "keyboard.Key.shift": "Left Shift",
-            "keyboard.Key.ctrl_l": "Left Ctrl",
-            "keyboard.Key.ctrl_r": "Right Ctrl",
-            "keyboard.Key.alt_l": "Left Alt",
-            "keyboard.Key.alt_r": "Right Alt",
-            "keyboard.Key.esc": "Escape",
-            "keyboard.Key.space": "Space",
-            "keyboard.Key.enter": "Enter",
-            "keyboard.Key.tab": "Tab",
-            "keyboard.Key.caps_lock": "Caps Lock",
-            "keyboard.Key.cmd": "Windows/Cmd",
-            "keyboard.Key.f1": "F1", "keyboard.Key.f2": "F2", "keyboard.Key.f3": "F3",
-            "keyboard.Key.f4": "F4", "keyboard.Key.f5": "F5", "keyboard.Key.f6": "F6",
-            "keyboard.Key.f7": "F7", "keyboard.Key.f8": "F8", "keyboard.Key.f9": "F9",
-            "keyboard.Key.f10": "F10", "keyboard.Key.f11": "F11", "keyboard.Key.f12": "F12"
-        }
-        # Handle single characters (e.g., 'a', '1')
-        if key_str.startswith("'") and key_str.endswith("'") and len(key_str) == 3:
-            return key_str[1].upper()
-        
-        return key_map.get(key_str, key_str.replace("keyboard.Key.", "").replace("_", " ").title())
-
-    def setup_dictation_page(self):
-        layout = QVBoxLayout(self.page_dictation)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(15)
-
-        # --- Header ---
-        header_layout = QHBoxLayout()
-        title = QLabel("OmniDictate")
-        title.setObjectName("headerTitle")
-        
-        self.model_display_label = QLabel(f"Model: {self.loaded_settings.get('model_size', DEFAULT_MODEL_SIZE)}")
-        self.model_display_label.setObjectName("settingLabel")
-        self.model_display_label.setStyleSheet("color: #888; font-size: 10pt; margin-right: 10px;")
-
-        self.settings_button = QPushButton()
-        self.settings_button.setIcon(self.create_gear_icon())
-        self.settings_button.setIconSize(QSize(24, 24))
-        self.settings_button.setObjectName("iconButton")
-        self.settings_button.setCursor(Qt.PointingHandCursor)
-        self.settings_button.setFixedSize(40, 40)
-        self.settings_button.setToolTip("Settings")
-
-        header_layout.addWidget(title)
-        header_layout.addStretch()
-        header_layout.addWidget(self.model_display_label)
-        header_layout.addWidget(self.settings_button)
-        layout.addLayout(header_layout)
-
-        # --- Transcription Area ---
-        self.transcription_display = QTextEdit()
-        self.transcription_display.setObjectName("transcriptionDisplay")
-        self.transcription_display.setReadOnly(True)
-        self.transcription_display.setPlaceholderText("Ready.")
-        layout.addWidget(self.transcription_display)
-
-        # --- Visual Hint Label ---
-        self.hint_label = QLabel("")
-        self.hint_label.setObjectName("hintLabel")
-        self.hint_label.setAlignment(Qt.AlignCenter)
-        self.hint_label.setFixedHeight(30)
-        layout.addWidget(self.hint_label)
-
-        # --- Visualizer ---
-        self.visualizer = QProgressBar()
-        self.visualizer.setObjectName("audioVisualizer")
-        self.visualizer.setFixedHeight(4)
-        self.visualizer.setTextVisible(False)
-        self.visualizer.setRange(0, 1000) 
-        self.visualizer.setValue(0)
-        layout.addWidget(self.visualizer)
-
-        # --- Floating Control Dock ---
-        dock_container = QFrame()
-        dock_container.setObjectName("controlDock")
-        dock_container.setFixedHeight(80)
-        dock_layout = QHBoxLayout(dock_container)
-        dock_layout.setContentsMargins(20, 10, 20, 10)
-        dock_layout.setSpacing(15)
-
-        # Mode Toggle (VAD vs PTT) - Combined Button
-        self.vad_toggle_button = QPushButton("VAD Mode")
-        self.vad_toggle_button.setObjectName("modeButton")
-        self.vad_toggle_button.setCheckable(True)
-        self.vad_toggle_button.setChecked(self.loaded_settings.get("vad_enabled", DEFAULT_VAD_ENABLED))
-        self.vad_toggle_button.setFixedSize(110, 45)
-        self.vad_toggle_button.setCursor(Qt.PointingHandCursor)
-        self.vad_toggle_button.setToolTip("Toggle between Voice Activity Detection and Push-to-Talk")
-
-        self.start_button = QPushButton("Start")
-        self.start_button.setObjectName("startButton")
-        self.start_button.setFixedSize(100, 45)
-        self.start_button.setCursor(Qt.PointingHandCursor)
-
-        self.stop_button = QPushButton("Stop")
-        self.stop_button.setObjectName("stopButton")
-        self.stop_button.setFixedSize(100, 45)
-        self.stop_button.setEnabled(False)
-        self.stop_button.setCursor(Qt.PointingHandCursor)
-        
-        self.copy_button = QPushButton("Copy")
-        self.copy_button.setFixedSize(80, 45)
-        self.copy_button.setCursor(Qt.PointingHandCursor)
-
-        dock_layout.addStretch()
-        dock_layout.addWidget(self.vad_toggle_button)
-        dock_layout.addWidget(self.start_button)
-        dock_layout.addWidget(self.stop_button)
-        dock_layout.addStretch()
-        dock_layout.addWidget(self.copy_button)
-
-        layout.addWidget(dock_container)
-
-    def setup_settings_page(self):
-        layout = QVBoxLayout(self.page_settings)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(10)
-
-        # --- Header ---
-        header_layout = QHBoxLayout()
-        self.back_button = QPushButton("← Back")
-        self.back_button.setObjectName("backButton") # Specific ID for styling
-        self.back_button.setFixedSize(100, 40)
-        self.back_button.setCursor(Qt.PointingHandCursor)
-        
-        settings_title = QLabel("Settings")
-        settings_title.setObjectName("headerTitle")
-        settings_title.setAlignment(Qt.AlignCenter)
-
-        header_layout.addWidget(self.back_button)
-        header_layout.addStretch()
-        header_layout.addWidget(settings_title)
-        header_layout.addStretch() 
-        header_layout.addSpacing(100) # Balance
-        layout.addLayout(header_layout)
-
-        # --- Scroll Area for Settings ---
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setStyleSheet("background: transparent;")
-        
-        content_widget = QWidget()
-        content_widget.setStyleSheet("background: transparent;")
-        scroll.setWidget(content_widget)
-        
-        # Grid Layout for Settings Content
-        grid = QGridLayout(content_widget)
-        grid.setHorizontalSpacing(8)
-        grid.setVerticalSpacing(18)
-        grid.setContentsMargins(10, 10, 20, 10)
-        
-        row = 0
-        
-        # --- AI Model Section ---
-        grid.addWidget(QLabel("AI Model", objectName="sectionHeader"), row, 0, 1, 2); row += 1
-        
-        grid.addWidget(QLabel("Whisper Model:", objectName="settingLabel", alignment=Qt.AlignRight | Qt.AlignVCenter), row, 0)
-        self.model_combo = QComboBox()
-        self.model_combo.addItems(["large-v3-turbo", "large-v3", "medium", "small", "base", "tiny"])
-        self.model_combo.setCurrentText(self.loaded_settings.get("model_size", DEFAULT_MODEL_SIZE))
-        grid.addWidget(self.model_combo, row, 1)
-        
-        # Language Selection
-        grid.addWidget(QLabel("Language:", objectName="settingLabel", alignment=Qt.AlignRight | Qt.AlignVCenter), row, 2)
-        self.language_combo = QComboBox()
-        
-        # Populate languages
-        languages = [
-            ("Auto Detect", None),
-            ("English", "en"),
-            ("Spanish", "es"),
-            ("French", "fr"),
-            ("German", "de"),
-            ("Italian", "it"),
-            ("Portuguese", "pt"),
-            ("Dutch", "nl"),
-            ("Russian", "ru"),
-            ("Chinese", "zh"),
-            ("Japanese", "ja")
-        ]
-        for name, code in languages:
-            self.language_combo.addItem(name, code)
-            
-        # Set current selection
-        current_lang_code = self.loaded_settings.get("language", DEFAULT_LANGUAGE)
-        index = self.language_combo.findData(current_lang_code)
-        if index != -1:
-            self.language_combo.setCurrentIndex(index)
-        else:
-            self.language_combo.setCurrentIndex(0) # Default to Auto Detect if unknown
-        grid.addWidget(self.language_combo, row, 3); row += 1
-        
-        grid.addWidget(QLabel("Silence Threshold:", objectName="settingLabel", alignment=Qt.AlignRight | Qt.AlignVCenter), row, 0)
-        self.silence_spinbox = QSpinBox()
-        self.silence_spinbox.setRange(50, 3000); self.silence_spinbox.setSingleStep(50)
-        self.silence_spinbox.setValue(self.loaded_settings.get("silence_threshold", DEFAULT_SILENCE_THRESHOLD))
-        grid.addWidget(self.silence_spinbox, row, 1)
-        
-        grid.addWidget(QLabel("Typing Delay (s):", objectName="settingLabel", alignment=Qt.AlignRight | Qt.AlignVCenter), row, 2)
-        self.delay_spinbox = QDoubleSpinBox()
-        self.delay_spinbox.setRange(0.0, 0.1); self.delay_spinbox.setSingleStep(0.005); self.delay_spinbox.setDecimals(3)
-        self.delay_spinbox.setValue(self.loaded_settings.get("char_delay", DEFAULT_CHAR_DELAY))
-        grid.addWidget(self.delay_spinbox, row, 3); row += 1
-
-        # --- Hotkeys Section ---
-        grid.addWidget(QLabel("Hotkeys", objectName="sectionHeader"), row, 0, 1, 2); row += 1
-        
-        grid.addWidget(QLabel("PTT Hotkey:", objectName="settingLabel", alignment=Qt.AlignRight | Qt.AlignVCenter), row, 0)
-        self.ptt_key_display_label = QLabel(self.format_key_name(self.loaded_settings.get('ptt_key_str', DEFAULT_PTT_KEY_STR)))
-        self.ptt_key_display_label.setStyleSheet("color: #0A84FF; font-weight: bold;")
-        self.set_ptt_key_button = QPushButton("Change")
-        self.set_ptt_key_button.setCursor(Qt.PointingHandCursor)
-        grid.addWidget(self.ptt_key_display_label, row, 1)
-        grid.addWidget(self.set_ptt_key_button, row, 2); row += 1
-        
-        # --- Advanced Section ---
-        grid.addWidget(QLabel("Advanced", objectName="sectionHeader"), row, 0, 1, 2); row += 1
-        
-        # Audio Sensitivity (RMS Threshold)
-        grid.addWidget(QLabel("Audio Sensitivity:", objectName="settingLabel", alignment=Qt.AlignRight | Qt.AlignVCenter), row, 0)
-        self.rms_spinbox = QDoubleSpinBox()
-        self.rms_spinbox.setRange(0.001, 0.1); self.rms_spinbox.setSingleStep(0.005); self.rms_spinbox.setDecimals(3)
-        self.rms_spinbox.setValue(self.loaded_settings.get("rms_threshold", DEFAULT_RMS_THRESHOLD))
-        self.rms_spinbox.setToolTip("Minimum audio energy to trigger transcription. Higher = less sensitive to background noise. Recommended: 0.010")
-        grid.addWidget(self.rms_spinbox, row, 1)
-        
-        # Hallucination Filter Level (same row, columns 2-3)
-        grid.addWidget(QLabel("Hallucination Filter:", objectName="settingLabel", alignment=Qt.AlignRight | Qt.AlignVCenter), row, 2)
-        self.hallucination_combo = QComboBox()
-        self.hallucination_combo.addItems(["Low", "Medium", "High"])
-        self.hallucination_combo.setCurrentText(self.loaded_settings.get("hallucination_filter", DEFAULT_HALLUCINATION_FILTER))
-        self.hallucination_combo.setToolTip("Controls how aggressively phantom text from silence is suppressed. Low = permissive, High = aggressive. Recommended: Medium")
-        grid.addWidget(self.hallucination_combo, row, 3); row += 1
-
-        # Insertion Method
-        grid.addWidget(QLabel("Insertion Method:", objectName="settingLabel", alignment=Qt.AlignRight | Qt.AlignVCenter), row, 0)
-        self.insertion_combo = QComboBox()
-        self.insertion_combo.addItems(["Paste", "Typing"])
-        self.insertion_combo.setCurrentText(self.loaded_settings.get("insertion_method", DEFAULT_INSERTION_METHOD))
-        self.insertion_combo.setToolTip("Paste: Instant text input using clipboard (recommended for long text). Typing: Emulate keystrokes.")
-        grid.addWidget(self.insertion_combo, row, 1)
-
-        grid.addWidget(QLabel("Paste Delay (s):", objectName="settingLabel", alignment=Qt.AlignRight | Qt.AlignVCenter), row, 2)
-        self.paste_delay_spinbox = QDoubleSpinBox()
-        self.paste_delay_spinbox.setRange(0.1, 1.0); self.paste_delay_spinbox.setSingleStep(0.05); self.paste_delay_spinbox.setDecimals(2)
-        self.paste_delay_spinbox.setValue(self.loaded_settings.get("paste_delay", DEFAULT_PASTE_DELAY))
-        self.paste_delay_spinbox.setToolTip("Time to wait after pasting before restoring the clipboard. Increase if apps like Gemini paste old text.")
-        grid.addWidget(self.paste_delay_spinbox, row, 3); row += 1
-
-        grid.addWidget(QLabel("Filter Words:", objectName="settingLabel", alignment=Qt.AlignLeft | Qt.AlignVCenter), row, 0, 1, 4); row += 1
-        self.filter_list = QListWidget()
-        self.filter_list.addItems(self.loaded_settings.get("filter_words", DEFAULT_FILTER_WORDS))
-        self.filter_list.setFixedHeight(180)
-        self.filter_list.setSpacing(0)
-        grid.addWidget(self.filter_list, row, 0, 1, 4); row += 1
-        
-        filter_controls = QHBoxLayout()
-        self.filter_add_edit = QLineEdit()
-        self.filter_add_edit.setPlaceholderText("Enter phrase...")
-        self.filter_add_button = QPushButton("Add")
-        self.filter_remove_button = QPushButton("Remove")
-        filter_controls.addWidget(self.filter_add_edit)
-        filter_controls.addWidget(self.filter_add_button)
-        filter_controls.addWidget(self.filter_remove_button)
-        grid.addLayout(filter_controls, row, 0, 1, 4); row += 1
-
-        grid.addItem(QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding), row, 0) # Spacer
-
-        self.restore_defaults_button = QPushButton("Restore Defaults")
-        self.restore_defaults_button.setStyleSheet("color: #888; background: transparent; border: 1px solid #444;")
-        grid.addWidget(self.restore_defaults_button, row + 1, 0, 1, 4)
-
-        layout.addWidget(scroll)
-
-
-    # --- Settings Management ---
-    def load_settings(self):
+    def load_settings(self) -> None:
+        """Read persisted QSettings values into ``self.loaded_settings`` dict."""
         self.loaded_settings = {
             "model_size": self.settings.value("model_size", DEFAULT_MODEL_SIZE),
             "language": self.settings.value("language", DEFAULT_LANGUAGE),
-            "vad_enabled": self.settings.value("vad_enabled", DEFAULT_VAD_ENABLED, type=bool),
-            "silence_threshold": self.settings.value("silence_threshold", DEFAULT_SILENCE_THRESHOLD, type=int),
-            "char_delay": self.settings.value("char_delay", DEFAULT_CHAR_DELAY, type=float),
+            "vad_enabled": self.settings.value(
+                "vad_enabled", DEFAULT_VAD_ENABLED, type=bool
+            ),
+            "silence_threshold": self.settings.value(
+                "silence_threshold", DEFAULT_SILENCE_THRESHOLD, type=int
+            ),
+            "char_delay": self.settings.value(
+                "char_delay", DEFAULT_CHAR_DELAY, type=float
+            ),
             "ptt_key_str": self.settings.value("ptt_key_str", DEFAULT_PTT_KEY_STR),
-            "rms_threshold": self.settings.value("rms_threshold", DEFAULT_RMS_THRESHOLD, type=float),
-            "hallucination_filter": self.settings.value("hallucination_filter", DEFAULT_HALLUCINATION_FILTER),
-            "insertion_method": self.settings.value("insertion_method", DEFAULT_INSERTION_METHOD),
-            "paste_delay": self.settings.value("paste_delay", DEFAULT_PASTE_DELAY, type=float),
-            "filter_words": self.settings.value("filter_words", DEFAULT_FILTER_WORDS)
+            "rms_threshold": self.settings.value(
+                "rms_threshold", DEFAULT_RMS_THRESHOLD, type=float
+            ),
+            "hallucination_filter": self.settings.value(
+                "hallucination_filter", DEFAULT_HALLUCINATION_FILTER
+            ),
+            "insertion_method": self.settings.value(
+                "insertion_method", DEFAULT_INSERTION_METHOD
+            ),
+            "paste_delay": self.settings.value(
+                "paste_delay", DEFAULT_PASTE_DELAY, type=float
+            ),
+            "filter_words": self.settings.value("filter_words", DEFAULT_FILTER_WORDS),
         }
-
-        # Sanitize model_size
         valid_models = ["large-v3-turbo", "large-v3", "medium", "small", "base", "tiny"]
         if self.loaded_settings["model_size"] not in valid_models:
-            print(f"Warning: Invalid model size '{self.loaded_settings['model_size']}', defaulting to {DEFAULT_MODEL_SIZE}")
+            print(
+                f"Warning: Invalid model size '{self.loaded_settings['model_size']}', defaulting to {DEFAULT_MODEL_SIZE}"
+            )
             self.loaded_settings["model_size"] = DEFAULT_MODEL_SIZE
-
-        # Sanitize language
-        valid_languages = [None, "", "None", "en", "es", "fr", "de", "it", "pt", "nl", "ru", "zh", "ja"]
+        valid_languages = [
+            None,
+            "",
+            "None",
+            "en",
+            "es",
+            "fr",
+            "de",
+            "it",
+            "pt",
+            "nl",
+            "ru",
+            "zh",
+            "ja",
+        ]
         if self.loaded_settings["language"] not in valid_languages:
-            print(f"Warning: Invalid language '{self.loaded_settings['language']}', defaulting to {DEFAULT_LANGUAGE}")
+            print(
+                f"Warning: Invalid language '{self.loaded_settings['language']}', defaulting to {DEFAULT_LANGUAGE}"
+            )
             self.loaded_settings["language"] = DEFAULT_LANGUAGE
-
-        if not isinstance(self.loaded_settings["filter_words"], list): self.loaded_settings["filter_words"] = DEFAULT_FILTER_WORDS
+        if not isinstance(self.loaded_settings["filter_words"], list):
+            self.loaded_settings["filter_words"] = DEFAULT_FILTER_WORDS
         print("Settings loaded:", self.loaded_settings)
 
-    def save_settings(self):
-        if self.setting_key_for: return
+    def save_settings(self) -> None:
+        """Read widget values, persist to QSettings, and propagate to the worker."""
+        if self.setting_key_for:
+            return
         print("Saving settings...")
-        self.settings.setValue("model_size", self.model_combo.currentText())
-        idx = self.language_combo.currentIndex(); lang_code = self.language_combo.itemData(idx) if idx != -1 else DEFAULT_LANGUAGE
+        self.settings.setValue(
+            "model_size", self.settings_page.model_combo.currentText()
+        )
+        idx = self.settings_page.language_combo.currentIndex()
+        lang_code = (
+            self.settings_page.language_combo.itemData(idx)
+            if idx != -1
+            else DEFAULT_LANGUAGE
+        )
         self.settings.setValue("language", lang_code)
-        self.settings.setValue("vad_enabled", self.vad_toggle_button.isChecked())
-        self.settings.setValue("silence_threshold", self.silence_spinbox.value())
-        self.settings.setValue("char_delay", self.delay_spinbox.value())
-        self.settings.setValue("ptt_key_str", self.loaded_settings.get('ptt_key_str', DEFAULT_PTT_KEY_STR)) # Keep internal string
-        self.settings.setValue("rms_threshold", self.rms_spinbox.value())
-        self.settings.setValue("hallucination_filter", self.hallucination_combo.currentText())
-        self.settings.setValue("insertion_method", self.insertion_combo.currentText())
-        self.settings.setValue("paste_delay", self.paste_delay_spinbox.value())
-        
-
-        filter_words = [self.filter_list.item(i).text() for i in range(self.filter_list.count())]
+        self.settings.setValue(
+            "vad_enabled", self.dictation_page.vad_toggle_button.isChecked()
+        )
+        self.settings.setValue(
+            "silence_threshold", self.settings_page.silence_spinbox.value()
+        )
+        self.settings.setValue("char_delay", self.settings_page.delay_spinbox.value())
+        self.settings.setValue(
+            "ptt_key_str", self.loaded_settings.get("ptt_key_str", DEFAULT_PTT_KEY_STR)
+        )
+        self.settings.setValue("rms_threshold", self.settings_page.rms_spinbox.value())
+        self.settings.setValue(
+            "hallucination_filter", self.settings_page.hallucination_combo.currentText()
+        )
+        self.settings.setValue(
+            "insertion_method", self.settings_page.insertion_combo.currentText()
+        )
+        self.settings.setValue(
+            "paste_delay", self.settings_page.paste_delay_spinbox.value()
+        )
+        filter_words = [
+            self.settings_page.filter_list.item(i).text()
+            for i in range(self.settings_page.filter_list.count())
+        ]
         self.settings.setValue("filter_words", filter_words)
-        self.settings.sync(); print("Settings saved.")
+        self.settings.sync()
+        print("Settings saved.")
         self.load_settings()
-        self.model_display_label.setText(f"Model: {self.loaded_settings['model_size']}") 
-        if not self.is_dictation_running: self.restart_hotkey_listener()
-        # Push updated settings to the live worker if it exists
+        self.dictation_page.model_display_label.setText(
+            f"Model: {self.loaded_settings['model_size']}"
+        )
+        if not self.is_dictation_running:
+            self.restart_hotkey_listener()
         if self.dictation_worker:
-            self.settings_updated_signal.emit({
-                "model_size": self.loaded_settings["model_size"],
-                "language": self.loaded_settings["language"],
-                "silence_threshold": self.loaded_settings["silence_threshold"],
-                "char_delay": self.loaded_settings["char_delay"],
-                "vad_enabled": self.loaded_settings["vad_enabled"],
-                "filter_words": self.loaded_settings.get("filter_words", []),
-                "rms_threshold": self.loaded_settings["rms_threshold"],
-                "hallucination_filter": self.loaded_settings["hallucination_filter"],
-                "insertion_method": self.loaded_settings["insertion_method"],
-                "paste_delay": self.loaded_settings["paste_delay"]
-            })
+            self.settings_updated_signal.emit(
+                {
+                    "model_size": self.loaded_settings["model_size"],
+                    "language": self.loaded_settings["language"],
+                    "silence_threshold": self.loaded_settings["silence_threshold"],
+                    "char_delay": self.loaded_settings["char_delay"],
+                    "vad_enabled": self.loaded_settings["vad_enabled"],
+                    "filter_words": self.loaded_settings.get("filter_words", []),
+                    "rms_threshold": self.loaded_settings["rms_threshold"],
+                    "hallucination_filter": self.loaded_settings[
+                        "hallucination_filter"
+                    ],
+                    "insertion_method": self.loaded_settings["insertion_method"],
+                    "paste_delay": self.loaded_settings["paste_delay"],
+                }
+            )
 
     @Slot()
-    def restore_default_settings(self):
+    def restore_default_settings(self) -> None:
+        """Restore all settings to their default values and save them."""
         print("Restoring default settings...")
-        self.model_combo.setCurrentText(DEFAULT_MODEL_SIZE)
-        index = self.language_combo.findData(DEFAULT_LANGUAGE); self.language_combo.setCurrentIndex(index if index != -1 else 0)
-        self.vad_toggle_button.setChecked(DEFAULT_VAD_ENABLED)
-        self.silence_spinbox.setValue(DEFAULT_SILENCE_THRESHOLD)
-        self.delay_spinbox.setValue(DEFAULT_CHAR_DELAY)
-        self.rms_spinbox.setValue(DEFAULT_RMS_THRESHOLD)
-        self.hallucination_combo.setCurrentText(DEFAULT_HALLUCINATION_FILTER)
-        self.insertion_combo.setCurrentText(DEFAULT_INSERTION_METHOD)
-        self.paste_delay_spinbox.setValue(DEFAULT_PASTE_DELAY)
+        self.settings_page.model_combo.setCurrentText(DEFAULT_MODEL_SIZE)
+        index = self.settings_page.language_combo.findData(DEFAULT_LANGUAGE)
+        self.settings_page.language_combo.setCurrentIndex(index if index != -1 else 0)
+        self.dictation_page.vad_toggle_button.setChecked(DEFAULT_VAD_ENABLED)
+        self.settings_page.silence_spinbox.setValue(DEFAULT_SILENCE_THRESHOLD)
+        self.settings_page.delay_spinbox.setValue(DEFAULT_CHAR_DELAY)
+        self.settings_page.rms_spinbox.setValue(DEFAULT_RMS_THRESHOLD)
+        self.settings_page.hallucination_combo.setCurrentText(
+            DEFAULT_HALLUCINATION_FILTER
+        )
+        self.settings_page.insertion_combo.setCurrentText(DEFAULT_INSERTION_METHOD)
+        self.settings_page.paste_delay_spinbox.setValue(DEFAULT_PASTE_DELAY)
         self.settings.setValue("ptt_key_str", DEFAULT_PTT_KEY_STR)
-        
-        self.ptt_key_display_label.setText(self.format_key_name(DEFAULT_PTT_KEY_STR))
-        
-
-        self.filter_list.clear(); self.filter_list.addItems(DEFAULT_FILTER_WORDS)
+        self.settings_page.ptt_key_display_label.setText(
+            format_key_name(DEFAULT_PTT_KEY_STR)
+        )
+        self.settings_page.filter_list.clear()
+        self.settings_page.filter_list.addItems(DEFAULT_FILTER_WORDS)
         self.update_vad_button_style()
         self.save_settings()
-        QMessageBox.information(self, "Settings Restored", "Default settings restored and saved.")
+        QMessageBox.information(
+            self, "Settings Restored", "Default settings restored and saved."
+        )
 
-    # --- Filter Word Management ---
-    def add_filter_word(self):
-        word = self.filter_add_edit.text().strip()
-        if word and not self.filter_list.findItems(word, Qt.MatchFlag.MatchExactly):
-            self.filter_list.addItem(QListWidgetItem(word)); self.filter_add_edit.clear(); self.save_settings()
+    def add_filter_word(self) -> None:
+        """Append the text in ``filter_add_edit`` to the filter word list if unique."""
+        word = self.settings_page.filter_add_edit.text().strip()
+        if word and (
+            not self.settings_page.filter_list.findItems(
+                word, Qt.MatchFlag.MatchExactly
+            )
+        ):
+            self.settings_page.filter_list.addItem(QListWidgetItem(word))
+            self.settings_page.filter_add_edit.clear()
+            self.save_settings()
 
-    def remove_filter_word(self):
-        items = self.filter_list.selectedItems()
-        if not items: return
-        for item in items: self.filter_list.takeItem(self.filter_list.row(item))
+    def remove_filter_word(self) -> None:
+        """Remove all selected items from the filter word list."""
+        items = self.settings_page.filter_list.selectedItems()
+        if not items:
+            return
+        for item in items:
+            self.settings_page.filter_list.takeItem(
+                self.settings_page.filter_list.row(item)
+            )
         self.save_settings()
 
-    # --- Hotkey Setting Logic ---
-    def prepare_to_set_key(self, key_type):
-        if self.is_dictation_running: QMessageBox.warning(self, "Warning", "Stop dictation first."); return
-        if self.setting_key_for: QMessageBox.warning(self, "Warning", f"Already waiting for {self.setting_key_for} key."); return
+    def prepare_to_set_key(self, key_type: str) -> None:
+        """Enter key-capture mode for the given setting type (e.g. ``"ptt"``)."""
+        if self.is_dictation_running:
+            QMessageBox.warning(self, "Warning", "Stop dictation first.")
+            return
+        if self.setting_key_for:
+            QMessageBox.warning(
+                self, "Warning", f"Already waiting for {self.setting_key_for} key."
+            )
+            return
         self.setting_key_for = key_type
-        
-        button = self.set_ptt_key_button
+        button = self.settings_page.set_ptt_key_button
         self.original_button_text = button.text()
-        button.setText("Press Key..."); button.setProperty("waitingInput", True); self.style().polish(button)
-        self.set_other_controls_enabled(False); self.stop_hotkey_listener()
+        button.setText("Press Key...")
+        button.setProperty("waitingInput", True)
+        self.style().polish(button)
+        self.set_other_controls_enabled(False)
+        self.stop_hotkey_listener()
         self.capture_hotkey_thread = QThread(self)
-        self.capture_hotkey_worker = HotkeyWorker(capture_mode=True)
+        self.capture_hotkey_worker = HotkeyWorker(is_capture_mode=True)
         self.capture_hotkey_worker.moveToThread(self.capture_hotkey_thread)
         self.capture_hotkey_worker.key_captured_signal.connect(self.handle_key_capture)
         self.capture_hotkey_worker.error_signal.connect(self.handle_key_capture_error)
-        self.capture_hotkey_thread.finished.connect(self.capture_hotkey_worker.deleteLater)
-        self.capture_hotkey_thread.finished.connect(self.capture_hotkey_thread.deleteLater)
-        self.capture_hotkey_thread.started.connect(self.capture_hotkey_worker.start_listening)
+        self.capture_hotkey_thread.finished.connect(
+            self.capture_hotkey_worker.deleteLater
+        )
+        self.capture_hotkey_thread.finished.connect(
+            self.capture_hotkey_thread.deleteLater
+        )
+        self.capture_hotkey_thread.started.connect(
+            self.capture_hotkey_worker.start_listening
+        )
         self.capture_hotkey_thread.start()
 
     @Slot(object, str)
-    def handle_key_capture(self, key_obj, key_str):
+    def handle_key_capture(self, key_obj: object, key_str: str) -> None:
+        """Store the captured key and finalize key-capture mode."""
         print(f"Captured {self.setting_key_for} key: {key_str}")
-        # Update the internal setting string
-        if self.setting_key_for == 'ptt': 
-            self.loaded_settings["ptt_key_str"] = key_str # Update local cache
-            self.ptt_key_display_label.setText(self.format_key_name(key_str))
-        
-        self.finish_setting_key(); self.save_settings()
+        if self.setting_key_for == "ptt":
+            self.loaded_settings["ptt_key_str"] = key_str
+            self.settings_page.ptt_key_display_label.setText(format_key_name(key_str))
+        self.finish_setting_key()
+        self.save_settings()
 
     @Slot(str)
-    def handle_key_capture_error(self, error_msg):
+    def handle_key_capture_error(self, error_msg: str) -> None:
+        """Display a warning dialog and cancel key-capture mode on failure."""
         QMessageBox.warning(self, "Hotkey Error", f"Could not capture key: {error_msg}")
-        self.finish_setting_key(); self.start_hotkey_listener()
+        self.finish_setting_key()
+        self.start_hotkey_listener()
 
-    def finish_setting_key(self):
-        if not self.setting_key_for: return
-        button = self.set_ptt_key_button
-        button.setText(self.original_button_text if hasattr(self, 'original_button_text') and self.original_button_text else "Change")
-        button.setProperty("waitingInput", False); self.style().polish(button)
-        self.setting_key_for = None; self.set_other_controls_enabled(True)
-        if self.capture_hotkey_worker: self.capture_hotkey_worker.stop_listening()
-        if self.capture_hotkey_thread and self.capture_hotkey_thread.isRunning(): self.capture_hotkey_thread.quit(); self.capture_hotkey_thread.wait(500)
-        self.capture_hotkey_worker = None; self.capture_hotkey_thread = None
+    def finish_setting_key(self) -> None:
+        """Exit key-capture mode, restore button labels, and restart hotkey listener."""
+        if not self.setting_key_for:
+            return
+        button = self.settings_page.set_ptt_key_button
+        button.setText(
+            self.original_button_text
+            if hasattr(self, "original_button_text") and self.original_button_text
+            else "Change"
+        )
+        button.setProperty("waitingInput", False)
+        self.style().polish(button)
+        self.setting_key_for = None
+        self.set_other_controls_enabled(True)
+        if self.capture_hotkey_worker:
+            self.capture_hotkey_worker.stop_listening()
+        if self.capture_hotkey_thread and self.capture_hotkey_thread.isRunning():
+            self.capture_hotkey_thread.quit()
+            self.capture_hotkey_thread.wait(500)
+        self.capture_hotkey_worker = None
+        self.capture_hotkey_thread = None
 
-    def set_other_controls_enabled(self, enabled):
-        self.start_button.setEnabled(enabled and not self.is_dictation_running)
-        self.stop_button.setEnabled(enabled and self.is_dictation_running)
+    def set_other_controls_enabled(self, enabled: bool) -> None:
+        """Enable or disable start/stop and settings widgets during key capture."""
+        self.dictation_page.start_button.setEnabled(
+            enabled and (not self.is_dictation_running)
+        )
+        self.dictation_page.stop_button.setEnabled(
+            enabled and self.is_dictation_running
+        )
         self.set_config_enabled(enabled)
-        self.set_ptt_key_button.setEnabled(enabled)
+        self.settings_page.set_ptt_key_button.setEnabled(enabled)
 
-    # --- VAD Toggle Logic ---
     @Slot()
-    def toggle_vad(self):
-        is_checked = self.vad_toggle_button.isChecked()
+    def toggle_vad(self) -> None:
+        """Toggle VAD/PTT mode from the button click and persist the setting."""
+        is_checked = self.dictation_page.vad_toggle_button.isChecked()
         self.update_vad_button_style()
         self.save_settings()
         if self.dictation_worker and self.is_dictation_running:
-             self.dictation_worker.set_vad_enabled(is_checked)
+            self.dictation_worker.set_vad_enabled(is_checked)
 
-    def update_vad_button_style(self):
-        is_checked = self.vad_toggle_button.isChecked()
-        ptt_key_name = self.format_key_name(self.loaded_settings.get('ptt_key_str', DEFAULT_PTT_KEY_STR))
-        
+    def update_vad_button_style(self) -> None:
+        """Update VAD button styling based on state."""
+        is_checked = self.dictation_page.vad_toggle_button.isChecked()
+        ptt_key_name = format_key_name(
+            self.loaded_settings.get("ptt_key_str", DEFAULT_PTT_KEY_STR)
+        )
         if is_checked:
-            self.vad_toggle_button.setText("VAD: ON")
+            self.dictation_page.vad_toggle_button.setText("VAD: ON")
         else:
-            self.vad_toggle_button.setText("PTT: ON")
-            
-        # Update hint based on running state
+            self.dictation_page.vad_toggle_button.setText("PTT: ON")
         if not self.is_dictation_running:
-            self.hint_label.setText("Select PTT or VAD mode and click Start")
-            self.hint_label.setStyleSheet("color: #888; font-style: italic;")
+            self.dictation_page.hint_label.setText(
+                "Select PTT or VAD mode and click Start"
+            )
+            self.dictation_page.hint_label.setStyleSheet(
+                "color: #888; font-style: italic;"
+            )
+        elif is_checked:
+            self.dictation_page.hint_label.setText("Listening for speech...")
+            self.dictation_page.hint_label.setStyleSheet(
+                "color: #0A84FF; font-style: italic;"
+            )
         else:
-            if is_checked:
-                self.hint_label.setText("Listening for speech...")
-                self.hint_label.setStyleSheet("color: #0A84FF; font-style: italic;")
-            else:
-                self.hint_label.setText(f"Hold '{ptt_key_name}' to speak")
-                self.hint_label.setStyleSheet("color: #0A84FF; font-style: italic;")
-        
-        # Force style update
-        self.vad_toggle_button.style().unpolish(self.vad_toggle_button)
-        self.vad_toggle_button.style().polish(self.vad_toggle_button)
+            self.dictation_page.hint_label.setText(f"Hold '{ptt_key_name}' to speak")
+            self.dictation_page.hint_label.setStyleSheet(
+                "color: #0A84FF; font-style: italic;"
+            )
+        self.dictation_page.vad_toggle_button.style().unpolish(
+            self.dictation_page.vad_toggle_button
+        )
+        self.dictation_page.vad_toggle_button.style().polish(
+            self.dictation_page.vad_toggle_button
+        )
 
-    # --- Slots for Worker Signals ---
     @Slot(str)
-    def update_status(self, status_text):
+    def update_status(self, status_text: str) -> None:
+        """Update the status bar text."""
         self.statusBar.showMessage(status_text)
-        # Update hint label based on status if needed
         if "Listening" in status_text:
-             if self.last_start_click_time > 0:
-                 print(f"Startup latency: {time.time() - self.last_start_click_time:.2f}s")
-                 self.last_start_click_time = 0
-             self.update_vad_button_style() # Refresh hint text logic
+            if self.last_start_click_time > 0:
+                print(
+                    f"Startup latency: {time.time() - self.last_start_click_time:.2f}s"
+                )
+                self.last_start_click_time = 0
+            self.update_vad_button_style()
 
     @Slot(str)
-    def handle_transcription(self, text):
-        current_text = self.transcription_display.toPlainText()
-        prefix = "\n" if current_text and not current_text.endswith(('\n', ' ')) else ""
-        if prefix == "" and current_text and not current_text.endswith(' '): prefix = " "
-        self.transcription_display.insertPlainText(prefix + text.strip())
-        self.transcription_display.moveCursor(QTextCursor.End)
+    def handle_transcription(self, text: str) -> None:
+        """Append transcribed text to the display."""
+        current_text = self.dictation_page.transcription_display.toPlainText()
+        prefix = (
+            "\n" if current_text and (not current_text.endswith(("\n", " "))) else ""
+        )
+        if prefix == "" and current_text and (not current_text.endswith(" ")):
+            prefix = " "
+        self.dictation_page.transcription_display.insertPlainText(prefix + text.strip())
+        self.dictation_page.transcription_display.moveCursor(QTextCursor.End)
 
     @Slot(float)
-    def update_visualizer(self, amplitude):
-        # Map amplitude (approx 0-2000) to progress bar (0-1000)
+    def update_visualizer(self, amplitude: float) -> None:
+        """Update the audio visualizer progress bar."""
         val = int(amplitude)
-        if val > 1000: val = 1000
-        self.visualizer.setValue(val)
+        if val > 1000:
+            val = 1000
+        self.dictation_page.visualizer.setValue(val)
 
     @Slot(str)
-    def show_error(self, error_text):
+    def show_error(self, error_text: str) -> None:
+        """Display error messages."""
         print(f"GUI Error: {error_text}")
         self.update_status("Error")
         QMessageBox.critical(self, "OmniDictate Error", error_text)
-        if self.is_dictation_running: self.stop_dictation()
-        else: self.reset_ui_after_stop()
+        if self.is_dictation_running:
+            self.stop_dictation()
+        else:
+            self.reset_ui_after_stop()
 
     @Slot(str)
-    def show_warning(self, warning_text):
+    def show_warning(self, warning_text: str) -> None:
+        """Display warning messages."""
         print(f"GUI Warning: {warning_text}")
         self.statusBar.showMessage(f"Warning: {warning_text}", 5000)
 
-    # --- Copy Transcription ---
     @Slot()
-    def copy_transcription(self):
+    def copy_transcription(self) -> None:
+        """Copy transcription to clipboard."""
         clipboard = QApplication.clipboard()
-        text_to_copy = self.transcription_display.toPlainText()
+        text_to_copy = self.dictation_page.transcription_display.toPlainText()
         clipboard.setText(text_to_copy)
         self.statusBar.showMessage("Transcription copied to clipboard!", 2000)
 
-    # --- GUI Control Methods ---
-    def _ensure_worker_created(self):
+    def _ensure_worker_created(self) -> None:
         """Create the worker and thread once. They persist until app close."""
         if self.dictation_thread and self.dictation_worker:
-            return  # Already created
-        # Clean up any partial remnants
+            return
         if self.dictation_thread and self.dictation_thread.isRunning():
             print("Error: Previous thread still running. Aborting.")
-            QMessageBox.critical(self, "Error", "Previous dictation process still running. Please wait or restart.")
+            QMessageBox.critical(
+                self,
+                "Error",
+                "Previous dictation process still running. Please wait or restart.",
+            )
             return
-        self.dictation_worker = None; self.dictation_thread = None
-
+        self.dictation_worker = None
+        self.dictation_thread = None
         print("Creating persistent dictation worker and thread...")
         self.dictation_thread = QThread(self)
         self.dictation_worker = DictationWorker(
-            gui_wid=int(self.winId()), model_size=self.loaded_settings['model_size'],
-            language=self.loaded_settings['language'], vad_enabled=self.loaded_settings['vad_enabled'],
-            silence_threshold=self.loaded_settings['silence_threshold'], silence_duration=0.5,
-            char_delay=self.loaded_settings['char_delay'], filter_words=self.loaded_settings['filter_words'],
-            rms_threshold=self.loaded_settings['rms_threshold'],
-            hallucination_filter=self.loaded_settings['hallucination_filter'],
-            insertion_method=self.loaded_settings['insertion_method'],
-            paste_delay=self.loaded_settings['paste_delay']
+            gui_wid=int(self.winId()),
+            model_size=self.loaded_settings["model_size"],
+            language=self.loaded_settings["language"],
+            vad_enabled=self.loaded_settings["vad_enabled"],
+            silence_threshold=self.loaded_settings["silence_threshold"],
+            silence_duration=0.5,
+            char_delay=self.loaded_settings["char_delay"],
+            filter_words=self.loaded_settings["filter_words"],
+            rms_threshold=self.loaded_settings["rms_threshold"],
+            hallucination_filter=self.loaded_settings["hallucination_filter"],
+            insertion_method=self.loaded_settings["insertion_method"],
+            paste_delay=self.loaded_settings["paste_delay"],
         )
         self.dictation_worker.moveToThread(self.dictation_thread)
-        # Connect worker signals
         self.dictation_worker.status_updated.connect(self.update_status)
         self.dictation_worker.transcription_ready.connect(self.handle_transcription)
         self.dictation_worker.error_occurred.connect(self.show_error)
         self.dictation_worker.warning_occurred.connect(self.show_warning)
         self.dictation_worker.audio_level.connect(self.update_visualizer)
         self.dictation_worker.auto_restart_requested.connect(self._handle_auto_restart)
-        # Connect control signals
         self.ptt_signal.connect(self.dictation_worker.set_ptt_state)
         self.settings_updated_signal.connect(self.dictation_worker.update_settings)
-        # Clean up only when thread actually finishes (app close)
         self.dictation_thread.finished.connect(self.dictation_worker.deleteLater)
         self.dictation_thread.finished.connect(self.dictation_thread.deleteLater)
         self.dictation_thread.finished.connect(self._on_worker_destroyed)
-        # Start thread event loop (worker stays alive, waiting for signals)
         self.dictation_thread.start()
         print("Persistent worker thread started.")
 
-    def start_dictation(self):
-        if self.is_dictation_running: print("Dictation is already running."); return
+    def start_dictation(self) -> None:
+        """Start the dictation process."""
+        if self.is_dictation_running:
+            print("Dictation is already running.")
+            return
         self.last_start_click_time = time.time()
         self.save_settings()
-        print(f"Attempting to start dictation with model: {self.loaded_settings['model_size']}")
+        print(
+            f"Attempting to start dictation with model: {self.loaded_settings['model_size']}"
+        )
         self._ensure_worker_created()
-        if not self.dictation_worker: return  # Creation failed
-        # Invoke start_processing on the worker's thread
-        from PySide6.QtCore import QMetaObject, Q_ARG
+        if not self.dictation_worker:
+            return
+        from PySide6.QtCore import QMetaObject
+
         QMetaObject.invokeMethod(self.dictation_worker, "start_processing")
-        self.update_status("Initializing..."); self.start_button.setEnabled(False); self.stop_button.setEnabled(True)
+        self.update_status("Initializing...")
+        self.dictation_page.start_button.setEnabled(False)
+        self.dictation_page.stop_button.setEnabled(True)
         self.set_config_enabled(False)
         self.is_dictation_running = True
         self.update_vad_button_style()
         print("Dictation started.")
 
-    def stop_dictation(self):
-        if not self.is_dictation_running and self.start_button.isEnabled(): print("Stop called but already stopped."); return
-        if self._is_stopping: return
+    def stop_dictation(self) -> None:
+        """Stop the dictation process."""
+        if (
+            not self.is_dictation_running
+            and self.dictation_page.start_button.isEnabled()
+        ):
+            print("Stop called but already stopped.")
+            return
+        if self._is_stopping:
+            return
         self._is_stopping = True
-        print("GUI requesting stop..."); self.update_status("Stopping...")
-        self.stop_button.setEnabled(False)
+        print("GUI requesting stop...")
+        self.update_status("Stopping...")
+        self.dictation_page.stop_button.setEnabled(False)
         if self.dictation_worker:
             from PySide6.QtCore import QMetaObject
+
             QMetaObject.invokeMethod(self.dictation_worker, "stop_processing")
         self.is_dictation_running = False
         self.reset_ui_after_stop()
-        self.visualizer.setValue(0)
+        self.dictation_page.visualizer.setValue(0)
         self.update_vad_button_style()
         self._is_stopping = False
         print("Dictation stopped. Worker and model remain in memory.")
 
     @Slot()
-    def _handle_auto_restart(self):
-        """
-        Called when the worker detects a stream failure (typically after sleep/wake).
+    def _handle_auto_restart(self) -> None:
+        """Called when the worker detects a stream failure (typically after sleep/wake).
+
         Performs a full Stop → delayed Start cycle to allow Windows audio drivers to
         fully reinitialize before the new stream is opened.
 
@@ -798,65 +599,67 @@ class OmniDictateApp(QMainWindow):
         A shorter delay causes the stream to open during a zero-gain window.
         """
         if not self.is_dictation_running:
-            return  # Already stopped; nothing to do
-
+            return
         print("GUI: Auto-restart triggered. Stopping dictation...")
         self.update_status("Recovering audio after sleep...")
         self.stop_dictation()
-
-        # 5-second delay before restart to let Windows audio drivers settle.
-        # This is the critical fix: AudioSrv needs ~3-5s after wake to fully
-        # re-apply microphone gain/boost to new WASAPI sessions.
-        DRIVER_SETTLE_MS = 5000
-        print(f"GUI: Will restart dictation in {DRIVER_SETTLE_MS // 1000}s...")
-        QTimer.singleShot(DRIVER_SETTLE_MS, self._auto_restart_start)
+        driver_settle_ms = 5000
+        print(f"GUI: Will restart dictation in {driver_settle_ms // 1000}s...")
+        QTimer.singleShot(driver_settle_ms, self._auto_restart_start)
 
     @Slot()
-    def _auto_restart_start(self):
+    def _auto_restart_start(self) -> None:
         """Deferred callback that performs the Start half of auto-restart."""
         if self.is_dictation_running:
-            return  # User manually restarted in the meantime
+            return
         print("GUI: Auto-restart: starting dictation now.")
         self.start_dictation()
 
-    def _destroy_worker(self):
+    def _destroy_worker(self) -> None:
         """Fully destroy the persistent worker and thread (for app close)."""
         if self.dictation_worker:
             from PySide6.QtCore import QMetaObject
+
             QMetaObject.invokeMethod(self.dictation_worker, "stop_processing")
         if self.dictation_thread and self.dictation_thread.isRunning():
             self.dictation_thread.quit()
             if not self.dictation_thread.wait(2000):
                 print("Warning: Dictation thread didn't finish quitting.")
-        # References are cleared in _on_worker_destroyed via finished signal
 
     @Slot()
-    def _on_worker_destroyed(self):
+    def _on_worker_destroyed(self) -> None:
         print("Dictation worker/thread destroyed.")
-        self.dictation_worker = None; self.dictation_thread = None
+        self.dictation_worker = None
+        self.dictation_thread = None
 
-    def reset_ui_after_stop(self):
-        self.start_button.setEnabled(True); self.stop_button.setEnabled(False)
-        self.set_config_enabled(True); self.update_status("Idle")
+    def reset_ui_after_stop(self) -> None:
+        """Reset UI elements after dictation stops."""
+        self.dictation_page.start_button.setEnabled(True)
+        self.dictation_page.stop_button.setEnabled(False)
+        self.set_config_enabled(True)
+        self.update_status("Idle")
 
-    def set_config_enabled(self, enabled: bool):
-        self.model_combo.setEnabled(enabled); self.language_combo.setEnabled(enabled)
-        # self.vad_toggle_button.setEnabled(enabled); # VAD toggle can be active during dictation
-        self.silence_spinbox.setEnabled(enabled)
-        self.delay_spinbox.setEnabled(enabled)
-        self.filter_list.setEnabled(enabled); self.filter_add_edit.setEnabled(enabled)
-        self.filter_add_button.setEnabled(enabled); self.filter_remove_button.setEnabled(enabled)
-        self.set_ptt_key_button.setEnabled(enabled); 
-        self.restore_defaults_button.setEnabled(enabled)
+    def set_config_enabled(self, enabled: bool) -> None:
+        """Enable or disable configuration UI."""
+        self.settings_page.model_combo.setEnabled(enabled)
+        self.settings_page.language_combo.setEnabled(enabled)
+        self.settings_page.silence_spinbox.setEnabled(enabled)
+        self.settings_page.delay_spinbox.setEnabled(enabled)
+        self.settings_page.filter_list.setEnabled(enabled)
+        self.settings_page.filter_add_edit.setEnabled(enabled)
+        self.settings_page.filter_add_button.setEnabled(enabled)
+        self.settings_page.filter_remove_button.setEnabled(enabled)
+        self.settings_page.set_ptt_key_button.setEnabled(enabled)
+        self.settings_page.restore_defaults_button.setEnabled(enabled)
 
-    # --- Hotkey Handling ---
-    def start_hotkey_listener(self):
+    def start_hotkey_listener(self) -> None:
+        """Start the background hotkey listener."""
         self.stop_hotkey_listener()
         print("Starting hotkey listener thread...")
         self.hotkey_thread = QThread(self)
         self.hotkey_worker = HotkeyWorker(
-            ptt_key_str=self.loaded_settings.get('ptt_key_str', DEFAULT_PTT_KEY_STR),
-            capture_mode=False
+            ptt_key_str=self.loaded_settings.get("ptt_key_str", DEFAULT_PTT_KEY_STR),
+            is_capture_mode=False,
         )
         self.hotkey_worker.moveToThread(self.hotkey_thread)
         self.hotkey_worker.ptt_pressed_signal.connect(self.on_ptt_pressed)
@@ -867,93 +670,107 @@ class OmniDictateApp(QMainWindow):
         self.hotkey_thread.finished.connect(self.hotkey_thread.deleteLater)
         self.hotkey_thread.start()
 
-    def stop_hotkey_listener(self):
-        if self.hotkey_worker: self.hotkey_worker.stop_listening()
+    def stop_hotkey_listener(self) -> None:
+        """Stop the background hotkey listener."""
+        if self.hotkey_worker:
+            self.hotkey_worker.stop_listening()
         if self.hotkey_thread and self.hotkey_thread.isRunning():
             self.hotkey_thread.quit()
-            if not self.hotkey_thread.wait(1000): print("Warning: Hotkey thread did not stop gracefully.")
-        self.hotkey_worker = None; self.hotkey_thread = None
+            if not self.hotkey_thread.wait(1000):
+                print("Warning: Hotkey thread did not stop gracefully.")
+        self.hotkey_worker = None
+        self.hotkey_thread = None
 
-    def restart_hotkey_listener(self):
+    def restart_hotkey_listener(self) -> None:
+        """Restart the hotkey listener to apply new bindings."""
         print("Restarting hotkey listener with updated keys...")
         self.start_hotkey_listener()
 
     @Slot()
-    def on_ptt_pressed(self):
-        if self.is_dictation_running: 
+    def on_ptt_pressed(self) -> None:
+        """Handle global PTT press event."""
+        if self.is_dictation_running:
             self.ptt_signal.emit(True)
-            # Visual feedback for PTT press
-            if not self.vad_toggle_button.isChecked():
-                self.hint_label.setText("Listening...")
-                self.hint_label.setStyleSheet("color: #30D158; font-style: italic; font-weight: bold;")
+            if not self.dictation_page.vad_toggle_button.isChecked():
+                self.dictation_page.hint_label.setText("Listening...")
+                self.dictation_page.hint_label.setStyleSheet(
+                    "color: #30D158; font-style: italic; font-weight: bold;"
+                )
 
     @Slot()
-    def on_ptt_released(self):
-        if self.is_dictation_running: 
+    def on_ptt_released(self) -> None:
+        """Handle global PTT release event."""
+        if self.is_dictation_running:
             self.ptt_signal.emit(False)
-            # Revert visual feedback
-            if not self.vad_toggle_button.isChecked():
-                ptt_key_name = self.format_key_name(self.loaded_settings.get('ptt_key_str', DEFAULT_PTT_KEY_STR))
-                self.hint_label.setText(f"Hold '{ptt_key_name}' to speak")
-                self.hint_label.setStyleSheet("color: #0A84FF; font-style: italic;")
+            if not self.dictation_page.vad_toggle_button.isChecked():
+                ptt_key_name = format_key_name(
+                    self.loaded_settings.get("ptt_key_str", DEFAULT_PTT_KEY_STR)
+                )
+                self.dictation_page.hint_label.setText(
+                    f"Hold '{ptt_key_name}' to speak"
+                )
+                self.dictation_page.hint_label.setStyleSheet(
+                    "color: #0A84FF; font-style: italic;"
+                )
 
     @Slot(str)
-    def handle_hotkey_error(self, error_msg):
-         QMessageBox.warning(self, "Hotkey Listener Error", f"Error in hotkey listener: {error_msg}\nListener might need restarting.")
+    def handle_hotkey_error(self, error_msg: str) -> None:
+        """Display hotkey listener errors to the user."""
+        QMessageBox.warning(
+            self,
+            "Hotkey Listener Error",
+            f"Error in hotkey listener: {error_msg}\nListener might need restarting.",
+        )
 
-    # --- Cleanup on Close ---
-    def closeEvent(self, event):
+    def closeEvent(self, event: object) -> None:
         """Ensure threads are stopped when the window is closed."""
         print("Close event triggered.")
         self.save_settings()
         if self.is_dictation_running:
             self.stop_dictation()
-        self._destroy_worker()  # Fully tear down the persistent worker
+        self._destroy_worker()
         self.stop_hotkey_listener()
         if isinstance(self.hotkey_thread, QThread) and self.hotkey_thread.isRunning():
-             print("Waiting for hotkey thread...")
-             start_wait = time.time()
-             while self.hotkey_thread.isRunning() and (time.time() - start_wait) < 0.7:
-                 QApplication.processEvents()
-                 time.sleep(0.05)
-             if self.hotkey_thread.isRunning(): print("Warning: Hotkey thread still running.")
+            print("Waiting for hotkey thread...")
+            start_wait = time.time()
+            while self.hotkey_thread.isRunning() and time.time() - start_wait < 0.7:
+                QApplication.processEvents()
+                time.sleep(0.05)
+            if self.hotkey_thread.isRunning():
+                print("Warning: Hotkey thread still running.")
         event.accept()
 
-# --- Main Execution ---
+
 if __name__ == "__main__":
-    # --- Set AppUserModelID for Taskbar Icon ---
     try:
         import ctypes
-        myappid = 'omnicorp.omnidictate.gui.2.0.2' # Arbitrary string
+
+        myappid = "omnicorp.omnidictate.gui.2.0.2"
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
     except Exception as e:
         print(f"Error setting AppUserModelID: {e}")
-
     app = QApplication(sys.argv)
-
- # --- Set App Icon EARLY ---
     try:
-        basedir = os.path.dirname(__file__)
-        icon_path = os.path.join(basedir, "icon.ico")
-        if os.path.exists(icon_path):
-            app_icon = QIcon(icon_path)
-            app.setWindowIcon(app_icon) # Set for the whole application
+        basedir = Path(__file__).parent
+        icon_path = basedir / "icon.ico"
+        if icon_path.exists():
+            app_icon = QIcon(str(icon_path))
+            app.setWindowIcon(app_icon)
             print(f"Application icon set from: {icon_path}")
         else:
             print(f"Warning: Icon file not found at {icon_path}")
     except Exception as e:
         print(f"Error setting application icon: {e}")
-    # --- End Set App Icon ---
-
-    # --- Apply Stylesheet ---
     try:
-        basedir = os.path.dirname(__file__)
-        style_path = os.path.join(basedir, "style.qss")
-        with open(style_path, "r") as f: _style = f.read(); app.setStyleSheet(_style)
+        style_path = Path(__file__).parent / "style.qss"
+        with open(style_path) as f:
+            _style = f.read()
+            app.setStyleSheet(_style)
         print("Stylesheet applied.")
-    except FileNotFoundError: print(f"Stylesheet '{style_path}' not found.")
-    except Exception as e: print(f"Error loading stylesheet: {e}")
-
+    except FileNotFoundError:
+        print(f"Stylesheet '{style_path}' not found.")
+    except Exception as e:
+        print(f"Error loading stylesheet: {e}")
     window = OmniDictateApp()
     window.show()
     sys.exit(app.exec())

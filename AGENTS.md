@@ -12,7 +12,7 @@
 
 ## 2. Concurrency & UI Threading
 * **Strict Decoupling:** Never block the main PySide6 UI event loop in `main_gui.py`.
-* **Inference Isolation:** Heavy operations (tensor translation, memory bounding) MUST occur in isolated `QThread` and `ThreadPoolExecutor` sub-threads in `core_logic.py`.
+* **Inference Isolation:** Heavy operations (tensor translation, memory bounding) MUST occur in isolated `QThread` and `ThreadPoolExecutor` sub-threads in `core/dictation_worker.py`.
 * **Daemonization:** Global inputs via `hotkey_listener.py` must run as a non-blocking daemon thread, transmitting events back via Qt Signals.
 * **Fallback Chain:** Respect the CTranslate2 initialization hardware fallback chain: CUDA `float16` -> CUDA `float32` -> CPU `int8`.
 
@@ -40,7 +40,7 @@
 
 ## 6. Testing & Pre-Commit Discipline
 * **Run Tests First:** Before proposing any code change, confirm the existing test suite passes with `uv run pytest`. This establishes a clean baseline. Never skip this step.
-* **Write Tests for New Logic:** Any new function, class, or data-flow branch in `core_logic.py`, `main_gui.py`, or `hotkey_listener.py` MUST have a corresponding test in `tests/`. Mock OS-level dependencies using the patterns already established in `tests/conftest.py`.
+* **Write Tests for New Logic:** Any new function, class, or data-flow branch in `core/dictation_worker.py`, `main_gui.py`, or `hotkey_listener.py` MUST have a corresponding test in `tests/`. Mock OS-level dependencies using the patterns already established in `tests/conftest.py`.
 * **Pre-Commit Is Mandatory:** All commits run `ruff check` → `ruff format --check` → `pytest` automatically via `.pre-commit-config.yaml`. Do NOT use `git commit --no-verify` except in genuine emergencies. Do not suppress linter warnings with `# noqa` unless accompanied by an explicit inline comment explaining why.
 
 ## 7. Qt Signal / Slot Contract

@@ -713,7 +713,7 @@ wheels = [
 
 [[package]]
 name = "omni-dictate"
-version = "2.2.2"
+version = "2.3.0"
 source = { virtual = "." }
 dependencies = [
     { name = "ctranslate2" },

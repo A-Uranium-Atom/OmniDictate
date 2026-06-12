@@ -7,7 +7,7 @@ OmniDictate is a Windows-based, real-time speech-to-text desktop application des
 The architecture is heavily decoupled using Python threads and Qt's event loop. It relies on four primary domains to ensure uninterrupted real-time audio capture and seamless window text output.
 
 1. **Presentation & Orchestration Layer (`main_gui.py`)** runs on the main thread.
-2. **Inference & Processing Engine (`core_logic.py`)** runs in an isolated `QThread` with sub-threads for task execution, audio polling, and typing.
+2. **Inference & Processing Engine (`core/dictation_worker.py`)** runs in an isolated `QThread` with sub-threads for task execution, audio polling, and typing.
 3. **Global Input Monitor (`hotkey_listener.py`)** runs a daemon thread to monitor OS-level input hooks without blocking.
 4. **Testing Infrastructure (`tests/`)** utilizes dependency mocking for offline, headless regression tests.
 
@@ -18,13 +18,13 @@ This is the application's lifecycle manager. It houses the `OmniDictateApp` clas
 
 **Key Responsibilities:**
 - **UI Management**: Houses a Stacked Widget switching between the primary Dictation Page (transcription log, settings toggle, visual timer, and audio levels) and the Settings Page.
-- **State Persistence**: Serializes and initializes user parameters via `QSettings` (e.g., model size, hallucination thresholds, VAD preferences, insertion methods, and custom filter words).
+- **State Persistence**: Serializes and initializes user parameters via `QSettings`.
 - **Thread Orchestration**: Responsible for instantiating the `DictationWorker` and `HotkeyWorker`. It cleanly starts, signals, and terminates these workers via Qt `Signals` and `Slots`. 
-- **Dynamic Updates**: If a user updates settings mid-session, this class emits a `settings_updated_signal(dict)` that updates internal parameters for the workers on-the-fly, reloading models only if necessary (e.g., when `model_size` changes).
+- **Dynamic Updates**: If a user updates settings mid-session, this class emits a `settings_updated_signal(object)` that updates internal parameters using a structured `DictationSettings` dataclass for the workers on-the-fly, reloading models only if necessary.
 
 ---
 
-### 2. Inference & Processing Engine (`core_logic.py`)
+### 2. Core Processing Package (`core/`)
 This is the heavy hitter of the application, managing raw microphone data, matrix operations, and OS-level keyboard/clipboard simulations. It centers around the `DictationWorker` (extending `QObject`).
 
 **Sub-Components & Logic:**
@@ -40,11 +40,11 @@ This is the heavy hitter of the application, managing raw microphone data, matri
   - Validates `no_speech_prob` per-segment to strip noise.
   - Filters out known Whisper artifacts using the user-defined `filter_words` array.
   - Detects if the model repeatedly hallucinates the exact same phrase multiple times in a row, actively scrubbing redundant strings.
-- **Typing & Insertion Thread (`_typing_loop`)**:
-  - A detached background thread consuming textual outputs via `text_queue`.
+- **Typing & Insertion Thread (`core/text_injector.py`)**:
+  - Standalone functions `paste_text` and `run_typing_loop` called from a `threading.Thread` created by `DictationWorker.start_processing`.
   - Polling active window via `ctypes.windll.user32.GetForegroundWindow()` to prevent recursive inserting into the OmniDictate app itself.
   - **Clipboard Injection**: Backs up the user's active clipboard via `win32clipboard`, places the new text, simulates a `Ctrl+V` keystroke via `pynput`, and restores all prior rich-text/file formats after a configurable `paste_delay` (default 300ms). This delay prevents race conditions in asynchronous apps (like Google Gemini). If the clipboard has complex dragged files (`CF_HDROP`), it bails out to protect data and falls back to character-by-character keypress emulation.
-- **Power Management (`_PowerMonitor`)**: A daemon thread hooking into Windows `win32gui` messages to explicitly track `PBT_APMRESUMEAUTOMATIC`. It forces an automated tear-down and delayed reboot of the audio driver queue after a system wakes from sleep to prevent dead PortAudio handles.
+- **Power Management (`core/power_monitor.py`)**: A daemon thread hooking into Windows `win32gui` messages to explicitly track `PBT_APMRESUMEAUTOMATIC`. It forces an automated tear-down and delayed reboot of the audio driver queue after a system wakes from sleep to prevent dead PortAudio handles.
 
 ---
 
@@ -55,19 +55,31 @@ Decoupled OS-level key interception to trigger application behavior without acti
 - **`HotkeyWorker`**: A background daemon that spins up a `pynput.keyboard.Listener`.
 - Listens for specific user-mapped Push-To-Talk actions globally.
 - Transmits events immediately back to the main thread via decoupled Qt signals (`ptt_pressed_signal`, `ptt_released_signal`).
-- Exposes a `capture_mode` configuration utilized by `main_gui.py` to allow end-users to easily remap new keystrokes on the fly.
+- Exposes a `is_capture_mode` configuration utilized by `main_gui.py` to allow end-users to easily remap new keystrokes on the fly.
 
 ---
 
-### 4. Testing Infrastructure (`tests/`)
+### 4. Configuration & Enums (`config.py`)
+Centralized constants, enums (`ModelSize`, `HallucinationLevel`, `InsertionMethod`), `DictationSettings` dataclass, and `get_punctuation_char` helper.
+
+---
+
+### 5. UI Components (`ui/`)
+UI component package containing:
+- `icons.py`: Reusable icon and UI utility functions (`create_gear_icon`, `format_key_name`).
+- `dictation_page.py`: `DictationPage` QWidget handling the main transcription view.
+- `settings_page.py`: `SettingsPage` QWidget handling user configuration forms.
+
+---
+
+### 6. Testing Infrastructure (`tests/`)
 A completely isolated automated test suite to validate regression on CI pipelines that lack audio hardware or GPUs.
-- **Frameworks Frameworks**: Utilizes `pytest` / `pytest-qt`.
+- **Frameworks**: Utilizes `pytest` / `pytest-qt`.
 - **Dependency Stubs**: The `conftest.py` file fully mocks out the `sounddevice` stream, Windows Clipboard hooks, and Faster-Whisper.
 - **GUI Validations (`test_main_gui.py`)**: Tests initial variable configurations, ensuring `QSettings` load, asserting UI layout updates when migrating between VAD/PTT settings.
-- **Inference Emulation (`test_core_logic.py`)**: Tests logic loops such as VAD duration limits, repetition/hallucination filtering, and safely bypassing complex clipboard formats. 
+- **Inference Emulation (`test_dictation_worker.py`, `test_vad_logic.py`, `test_text_injector.py`)**: Tests logic loops such as VAD duration limits, repetition/hallucination filtering, and safely bypassing complex clipboard formats. 
+- **Configuration & Dataclasses (`test_config.py`)**: Tests enum values, string equality logic, and dict-like fallback properties.
 - **Hotkey Validation (`test_hotkey_listener.py`)**: Confirms `pynput` correctly translates keycodes to human-readable strings and appropriately binds PTT handlers.
-
----
 
 ## Data Flow (End-to-End Transcription)
 For AI agents assessing the flow of a single input request, the data travels sequentially across the following isolated concurrently running processes:
